@@ -31,6 +31,7 @@ QUIT_POLL_SECONDS = 0.1
 READY_WAIT_SECONDS = 20
 READY_POLL_SECONDS = 0.2
 REQUEST_BODY_LIMIT = 80 * 1024 * 1024  # a game file sent by the GUI's import
+CODE_MINUTES = 2  # weblogin.CODE_SECONDS, as the link's line says it
 
 
 def home_dir() -> Path:
@@ -140,6 +141,31 @@ def _open_when_ready(port: int) -> None:
     threading.Thread(target=wait, daemon=True, name="open-window").start()
 
 
+def _print_login(info: dict) -> int:
+    """Ask the running app for a one-time login link and print it (weblogin.py): the secret itself stays in
+    server.json."""
+    try:
+        url = _call(info, "/api/web-login", {})["url"]
+    except urllib.error.HTTPError as e:
+        print(json.loads(e.read() or b"{}").get("error") or str(e), file=sys.stderr)
+        return 1
+    except (OSError, ValueError, KeyError) as e:
+        print(f"{edition.NAME} didn't answer: {e}", file=sys.stderr)
+        return 1
+    print(f"open in your browser (once, within {CODE_MINUTES} minutes): {url}", flush=True)
+    return 0
+
+
+def _print_login_when_ready(info: dict) -> None:
+    def wait():
+        for _ in range(int(READY_WAIT_SECONDS / READY_POLL_SECONDS)):
+            if _alive(info["port"]):
+                _print_login(info)
+                return
+            time.sleep(READY_POLL_SECONDS)
+    threading.Thread(target=wait, daemon=True, name="web-login").start()
+
+
 def run(args) -> int:
     import uvicorn
 
@@ -148,6 +174,9 @@ def run(args) -> int:
     from .server import build
     from .support import file_log
 
+    web = bool(getattr(args, "web", False)) or os.environ.get("DECOMP_WEB") == "1"
+    if web:  # (kept in the environment: a restart into an update comes back in the web mode, updates.restart)
+        os.environ.update(DECOMP_WEB="1", DECOMP_WINDOW="0")
     home = home_dir()
     internal = home / ".decomp"
     internal.mkdir(parents=True, exist_ok=True)
@@ -156,6 +185,8 @@ def run(args) -> int:
     state_file = internal / "server.json"
     restarted = _restart_state()
     prev = None if restarted else replace_older(state_file)
+    if prev and web:
+        return _print_login(prev)
     if prev:
         try:
             shown = _call(prev, "/api/window", {}).get("window")
@@ -163,7 +194,7 @@ def run(args) -> int:
             shown = False
         print(f"{edition.NAME} is already running" + ("" if shown else ": its window couldn't open (see above)"))
         return 0
-    if window.wanted() and (why := window.missing()):
+    if not web and window.wanted() and (why := window.missing()):
         log.error("no window: %s", why)
         print(why, file=sys.stderr)
         window.tell_desktop(f"{edition.NAME} can't open its window", why)
@@ -179,14 +210,17 @@ def run(args) -> int:
     os.chmod(state_file, 0o600)
     cleanup.old_registrations(internal)
     net = RomNetwork(internal / "decomp.db", home)
-    mcp, manager, security, quit_app = build(net, internal, port, secret)
+    mcp, manager, security, quit_app = build(net, internal, port, secret, web=web)
     app = mcp.streamable_http_app(transport_security=security, max_request_body_size=REQUEST_BODY_LIMIT, host="127.0.0.1")
     # with a tray icon, helpers kept working without the window have a way back to it
-    window.IN_TRAY = tray.start(window.open_app, quit_app)
+    window.IN_TRAY = False if web else tray.start(window.open_app, quit_app)
     print(f"{edition.NAME} {__import__('decompnet').__version__}\nyour projects: {hostenv.shown_path(home)}"
-          + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C, or quit it in its window"), flush=True)
+          + ("\nupdated and restarted" if restarted else
+             "\nstop with Ctrl-C or `decomp stop`" if web else "\nstop with Ctrl-C, or quit it in its window"), flush=True)
     # (1.0.2 and older restart into a new version without saying: they had a browser tab, which can't follow)
-    if not restarted or restarted.get("window", True):
+    if web:
+        _print_login_when_ready({"port": port, "secret": secret})
+    elif not restarted or restarted.get("window", True):
         _open_when_ready(port)
     try:
         uvicorn.Server(server_config(app)).run(sockets=[sock])
@@ -306,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=edition.FIRST_PORT, help=argparse.SUPPRESS)
     # what 1.0.2 and older pass when they restart into an update: refusing it would end the app mid-update
     ap.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--web", action="store_true",
+                    help="no window: print a one-time link that opens the app in a browser on this computer "
+                         "(a server or dev container reached through VS Code); same as DECOMP_WEB=1")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
     sub.add_parser("stop", help="quit the running app (and every helper it started)")

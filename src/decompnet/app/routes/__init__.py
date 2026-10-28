@@ -48,6 +48,9 @@ class App:
     updater: updates.Updater | None = None
     busy: Callable[[], bool] | None = None  # whether helpers or a job are working
     quit_app: Callable[[], None] | None = None  # quit: the window, every helper, the server
+    admitted: Callable[[Any], bool] | None = None  # admitted(request): the window's secret, or a web session
+    host_ok: Callable[[Any], bool] | None = None  # host_ok(request): the Host header names this app
+    web_login: Any = None  # weblogin.WebLogin in the web mode (`decomp --web`), else None
     # what one part of the app lends another (set by the module that defines it)
     autopilot: Callable[[str], None] | None = None  # state: start autopilot on a project
     with_project: Callable[..., Any] | None = None  # projects: a project route from fn(slug, request, data)

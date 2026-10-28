@@ -24,13 +24,13 @@ from starlette.responses import JSONResponse, Response
 from .. import agents as kinds
 from .. import hostenv
 from ..network import NetworkError
-from . import agents, collab, routes, saves, tools, updates, window
+from . import agents, collab, routes, saves, tools, updates, weblogin, window
 from .engine import RomNetwork
 from .routes import forks, life, pages, projects, rooms, setup, state
 from .support import Jobs, Settings, session_options
 
 
-def build(net: RomNetwork, home: Path, port: int, secret: str):
+def build(net: RomNetwork, home: Path, port: int, secret: str, web: bool = False):
     mcp_url = f"http://127.0.0.1:{port}/mcp"
     build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
     manager = agents.Manager(net, home, mcp_url)
@@ -63,6 +63,23 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     net.auto_compiler = bool(settings.data.get("auto_compiler"))
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    web_login = weblogin.WebLogin(port) if web else None  # `decomp --web`: a browser signs in with a one-time link
+
+    def host_ok(request: Request) -> bool:
+        """The Host header names this app: a web page that rebinds its own name to 127.0.0.1 names its own host.
+        In the web mode any port of this computer's own name will do: VS Code forwards the container's port to
+        whichever port is free on the user's computer."""
+        host = request.headers.get("host") or ""
+        if host in allowed_hosts:
+            return True
+        return web_login is not None and weblogin.local_host(host)
+
+    def admitted(request: Request) -> bool:
+        """The app's own window (or `decomp`), by the secret in its user agent; in the web mode also a browser
+        signed in with a one-time link. URLs never grant access."""
+        if secrets.compare_digest(window.request_token(request), secret):
+            return True
+        return web_login is not None and web_login.admits(request)
 
     def agent_of(ctx: Context):
         headers = ctx.headers or {}
@@ -121,9 +138,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
 
     def guard(request: Request, write: bool = False) -> Response | None:
-        if request.headers.get("host") not in allowed_hosts:
+        if not host_ok(request):
             return JSONResponse({"error": "bad host"}, status_code=403)
-        if not secrets.compare_digest(window.request_token(request), secret):
+        if not admitted(request):
             return JSONResponse({"error": "decompdecomp only answers its own window: open it with `decomp`"},
                                 status_code=401)
         if write and request.headers.get("x-decomp") != "1":
@@ -150,7 +167,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     # whose autopilot and with_project they use
     app = routes.App(net, mcp, home, port, secret, mcp_url, build_id, manager, jobs, settings, allowed_hosts,
                      guard, body, call, fail, updater=updates.Updater(before_restart, port, secret),
-                     busy=busy, quit_app=quit_app)
+                     busy=busy, quit_app=quit_app, admitted=admitted, web_login=web_login, host_ok=host_ok)
     for part in (pages, state, projects, forks, setup, life, rooms):
         part.register(app)
 

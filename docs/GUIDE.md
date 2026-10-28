@@ -275,6 +275,15 @@ window: `decomp` or the apps menu shows the open one. When you close it while he
 them and quit, or keep them working. They keep working without the window; the tray icon where available (or `decomp`) brings it
 back. **Quit** ends the app and every helper agent it started.
 
+**In a browser on the same computer (`decomp --web`).** On a server or in a dev container there's no window to
+open. `decomp --web` (or `DECOMP_WEB=1`) starts the app without one and prints a login link, for a browser on that
+same computer: VS Code's browser, connected to the container, reaches it through VS Code's own port forwarding. The
+app still listens on 127.0.0.1 only, so nothing else on the network reaches it. The link works once, within two
+minutes, and becomes a cookie for this app's port alone; the window's secret never reaches the browser, so a link
+left in the history or a log lets nobody in. Run `decomp --web` again for a new link (in another browser, or after
+the app restarted). Stop it with `decomp stop` or **Quit**; helper agents keep working when the tab closes. The
+system's file chooser opens on the computer the app runs on: type a path or drop a file instead.
+
 **Updates.** When a new version is available, the app asks you one time. One click installs it and restarts the app.
 Helper agents continue their work. To change this behavior, go to Settings.
 
