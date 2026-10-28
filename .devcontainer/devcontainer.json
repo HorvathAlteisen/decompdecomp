@@ -1,0 +1,23 @@
+{
+  "name": "decompdecomp",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  // there's no window in a container: `uv run decomp` starts the web mode and prints a login link
+  "containerEnv": { "DECOMP_WEB": "1" },
+  // projects and the installed compilers outlive a rebuild of the container
+  "mounts": [
+    "source=decompdecomp-projects,target=/home/vscode/Decomp-dev,type=volume",
+    "source=decompdecomp-toolchains,target=/home/vscode/.local/share/decompnet,type=volume"
+  ],
+  "postCreateCommand": "uv sync",
+  // a checkout is the development copy: port 6474 (app/edition.py). VS Code tunnels it; nothing is published.
+  "forwardPorts": [6474],
+  "portsAttributes": { "6474": { "label": "decompdecomp", "onAutoForward": "silent" } },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "settings": { "python.defaultInterpreterPath": "/home/vscode/.venv/bin/python" }
+    }
+  }
+}
