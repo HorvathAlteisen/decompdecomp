@@ -87,7 +87,9 @@ def main() -> None:
     files = delinks["files"]
     dsd_configs = [str(p) for p in Path("config", VERSION).rglob("*.txt")]
     rom = BUILD / f"{GAME}.nds"
-    with open("build.ninja", "w", encoding="utf-8") as f:
+    # written beside and moved into place at the end: a run stopped halfway (a missing compiler's sys.exit, the app
+    # quitting) left an empty build.ninja, newer than its inputs, so ninja never ran this again and every build failed
+    with open("build.ninja.tmp", "w", encoding="utf-8") as f:
         n = ninja_syntax.Writer(f)
         n.rule("extract", f"{DSD} rom extract --rom $in --output-path {EXTRACT}")
         n.rule("delink", f"{DSD} delink --config-path {CONFIG}")
@@ -133,6 +135,7 @@ def main() -> None:
         n.build("build.ninja", "configure", [__file__, *dsd_configs, *[str(s) for s in sources()],
                                              *([str(FILE_COMPILERS)] if FILE_COMPILERS.exists() else [])])
         n.default(["objdiff.json", str(BUILD / "rom.ok"), *objs])
+    os.replace("build.ninja.tmp", "build.ninja")
 
 
 if __name__ == "__main__":
