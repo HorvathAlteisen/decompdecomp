@@ -3,8 +3,13 @@
   "build": { "dockerfile": "Dockerfile" },
   "remoteUser": "vscode",
   // bubblewrap (the sandbox for compiles, see Dockerfile) makes user namespaces. The default seccomp and AppArmor
-  // profiles of Docker block user namespaces. These options remove the two profiles from this container.
-  "runArgs": ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined"],
+  // profiles of Docker block user namespaces. The first two options remove the two profiles from this container.
+  // bubblewrap also mounts a new /proc for each compile. Docker covers some paths in /proc of the container
+  // (for example /proc/kcore and /proc/sys). While these paths are covered, the kernel does not let bubblewrap
+  // mount a new /proc. The error is "bwrap: Can't mount proc on /proc: Operation not permitted", and each
+  // compile fails. "systempaths=unconfined" removes these covers. Use this container only on your own computer.
+  "runArgs": ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
+              "--security-opt", "systempaths=unconfined"],
   "updateRemoteUserUID": true,
   // there's no window in a container: `uv run decomp` starts the web mode and prints a login link
   "containerEnv": { "DECOMP_WEB": "1" },
