@@ -9,12 +9,18 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /usr/local/bin/uv
 # and git trust it. Without one this does nothing.
 COPY certs/ /usr/local/share/ca-certificates/devcontainer/
 
-# One layer. git: VS Code's source control, and decompdecomp clones public decomps; nothing else, the compilers and
-# their 32-bit runtime come pinned through decompdecomp's own installer (toolchains.toml), not from apt. Then the
-# network's root CA, and a user of your own (VS Code matches its uid to yours) with the folders the volumes in
-# devcontainer.json keep.
+# All steps are in one layer. This layer installs these packages:
+# - git: VS Code uses git for source control. decompdecomp uses git to clone public decomps.
+# - bubblewrap: decompdecomp runs each compile in a bubblewrap sandbox. The sandbox also gives old 32-bit
+#   compilers (for example the PS2 compilers ee-gcc 2.9x) the 32-bit loader at /lib/ld-linux.so.2.
+#   The container does not have this loader. Without bubblewrap, these compilers do not start.
+#   The error is "No such file or directory".
+# Do not install compilers or their 32-bit runtime with apt. decompdecomp installs them with fixed versions
+# and checksums (toolchains.toml).
+# Then the layer adds the root CA of the network. It also adds a user (VS Code sets its uid to your uid) and the
+# folders that the volumes in devcontainer.json keep.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git bubblewrap \
     && update-ca-certificates \
     && useradd -m -s /bin/bash -u 1000 vscode \
     && mkdir -p /home/vscode/Decomp-dev /home/vscode/.local/share/decompnet \
