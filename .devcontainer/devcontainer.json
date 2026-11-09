@@ -2,6 +2,9 @@
   "name": "decompdecomp",
   "build": { "dockerfile": "Dockerfile" },
   "remoteUser": "vscode",
+  // bubblewrap (the sandbox for compiles, see Dockerfile) makes user namespaces. The default seccomp and AppArmor
+  // profiles of Docker block user namespaces. These options remove the two profiles from this container.
+  "runArgs": ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined"],
   "updateRemoteUserUID": true,
   // there's no window in a container: `uv run decomp` starts the web mode and prints a login link
   "containerEnv": { "DECOMP_WEB": "1" },
