@@ -134,7 +134,8 @@ tool and the class lines of `get_function`),
 `app/rangecheck.py` tests a suggested range on its neighbours before it applies), `app/tools.py` (the MCP
 tools helpers get and their prompt; MCP is only the app's private wiring to the CLI helpers it starts), `app/window.py`
 + `app/gtkwindow.py` + `app/macwindow.py` + `app/tray.py` (the window: Linux uses system GTK/WebKitGTK, macOS uses
-Cocoa/WebKit through the app's Python; the page answers only a window with the secret in its user agent; Linux and
+Cocoa/WebKit through the app's Python; the page answers only a window with the secret in its user agent, or, with
+`decomp --web`, a browser signed in with a one-time link, `app/weblogin.py`; Linux and
 Windows have a tray icon; tests set `DECOMP_WINDOW=0` and
 `DECOMP_TRAY=0`), `app/edition.py` (release or development copy), `app/saves.py` (a ROM project's work as plain files, and a
 project restored from them), `app/readable.py` (polishing matched code), `app/knowledge.py` (what agents learn,
