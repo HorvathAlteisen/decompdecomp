@@ -15,12 +15,17 @@ COPY certs/ /usr/local/share/ca-certificates/devcontainer/
 #   compilers (for example the PS2 compilers ee-gcc 2.9x) the 32-bit loader at /lib/ld-linux.so.2.
 #   The container does not have this loader. Without bubblewrap, these compilers do not start.
 #   The error is "No such file or directory".
+# - python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1: the app's own window (app/gtkwindow.py). The system's
+#   /usr/bin/python3 runs it, because uv's Python cannot load the GTK bindings. The window shows on the Windows
+#   desktop through WSLg (see devcontainer.json).
+# - libgl1-mesa-dri, fonts-dejavu-core: WebKit needs a GL driver and at least one font to draw the page.
 # Do not install compilers or their 32-bit runtime with apt. decompdecomp installs them with fixed versions
 # and checksums (toolchains.toml).
 # Then the layer adds the root CA of the network. It also adds a user (VS Code sets its uid to your uid) and the
 # folders that the volumes in devcontainer.json keep.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git bubblewrap \
+       python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libgl1-mesa-dri fonts-dejavu-core \
     && update-ca-certificates \
     && useradd -m -s /bin/bash -u 1000 vscode \
     && mkdir -p /home/vscode/Decomp-dev /home/vscode/.local/share/decompnet \
