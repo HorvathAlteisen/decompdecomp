@@ -5,6 +5,7 @@ and every compile failed with "/bin/sh: 1: ...: not found" (five compiles, two s
 import json
 import sys
 import types
+from pathlib import Path
 
 from decompnet.app import agents as agents_mod
 from decompnet.app.engine import RomNetwork
@@ -33,6 +34,8 @@ def test_build_problem_finds_programs_build_ninja_runs_that_arent_here(tmp_path)
     tool = (root / "tools" / "configure.py").as_posix()  # a program that's here, by absolute path on any system
     (root / "build.ninja").write_text(f"PY = {sys.executable}\nrule cc\n  command = {tool} x\n")
     assert fp.build_problem() is None
+    (root / "build.ninja").write_text("")  # a configure stopped halfway: ninja would never remake it
+    assert "empty" in fp.build_problem()
     (root / "objdiff.json").unlink()
     assert "objdiff.json" in fp.build_problem()
 
@@ -58,3 +61,13 @@ def test_helpers_dont_start_a_session_on_a_project_that_doesnt_build(tmp_path):
     assert GONE in agents_mod.Manager._build_problem(fake, "p")
     (root / "build.ninja").write_text(f"PY = {sys.executable}\n")
     assert agents_mod.Manager._build_problem(fake, "p") is None
+
+
+def test_configures_write_build_ninja_beside_and_move_it_into_place():
+    """A configure stopped halfway (a missing compiler's sys.exit, the app quitting) left a DS project an empty
+    build.ninja, newer than its inputs, so ninja never ran configure again and every build failed."""
+    consoles = Path(__file__).resolve().parents[1] / "src" / "decompnet" / "consoles"
+    for script in consoles.glob("*/project_template/tools/configure.py"):
+        text = script.read_text(encoding="utf-8")
+        assert 'open("build.ninja", "w"' not in text, script
+        assert 'os.replace("build.ninja.tmp", "build.ninja")' in text, script

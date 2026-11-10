@@ -415,6 +415,12 @@ class ForkProject:
         ninja = self.root / "build.ninja"
         if not ninja.is_file():
             return None
+        try:
+            if ninja.stat().st_size == 0:
+                # a configure stopped halfway left it empty; it is newer than its inputs, so ninja never remakes it
+                return "build.ninja is empty (the project's setup was stopped halfway)"
+        except OSError as e:
+            return f"build.ninja can't be read: {e}"
         missing: list[str] = []
         try:
             with open(ninja, errors="replace", encoding="utf-8") as f:

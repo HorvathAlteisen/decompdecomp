@@ -87,7 +87,9 @@ def main() -> None:
     info = json.loads(CONFIG.read_text(encoding="utf-8"))
     units = info["units"]
     headers = [p.as_posix() for p in files("include", (".h", ".hpp"))]
-    with open("build.ninja", "w", encoding="utf-8") as f:
+    # written beside and moved into place at the end: a run stopped halfway left an empty build.ninja, newer than
+    # its inputs, so ninja never ran this again and every build failed
+    with open("build.ninja.tmp", "w", encoding="utf-8") as f:
         n = ninja_syntax.Writer(f)
         n.rule("delink", f"{PY} tools/delink.py {CONFIG.as_posix()} {(BUILD / 'target').as_posix()}", restat=True)
         compiler = [PYTHON, "tools/compile.py", "--config", CONFIG.as_posix()]
@@ -126,6 +128,7 @@ def main() -> None:
                                              *[s.as_posix() for s in files("src", (".c", ".cpp"))],
                                              *[p.as_posix() for p in (FILE_COMPILERS, FILE_FLAGS) if p.exists()]])
         n.default(["prepare"])
+    os.replace("build.ninja.tmp", "build.ninja")
 
     objdiff = {
         "$schema": "https://raw.githubusercontent.com/encounter/objdiff/main/config.schema.json",
