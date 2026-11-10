@@ -11,12 +11,23 @@
   "runArgs": ["--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
               "--security-opt", "systempaths=unconfined"],
   "updateRemoteUserUID": true,
-  // there's no window in a container: `uv run decomp` starts the web mode and prints a login link
-  "containerEnv": { "DECOMP_WEB": "1" },
-  // projects and the installed compilers outlive a rebuild of the container
+  // The app's window shows on the Windows desktop through WSLg. The variables and the two WSLg mounts follow
+  // microsoft/wslg's samples/container/Containers.md. Docker Desktop (WSL2 backend) offers WSLg's folder at
+  // /run/desktop/mnt/host/wslg. If the container does not start because these mounts fail, remove the two WSLg
+  // mounts and the three display variables, and set "DECOMP_WEB": "1": `uv run decomp` then starts the web mode and
+  // prints a login link. DECOMP_TRAY: a container has no tray.
+  "containerEnv": {
+    "DISPLAY": ":0",
+    "WAYLAND_DISPLAY": "wayland-0",
+    "XDG_RUNTIME_DIR": "/mnt/wslg/runtime-dir",
+    "DECOMP_TRAY": "0"
+  },
+  // projects and the installed compilers outlive a rebuild of the container; the last two mounts are WSLg (above)
   "mounts": [
     "source=decompdecomp-projects,target=/home/vscode/Decomp-dev,type=volume",
-    "source=decompdecomp-toolchains,target=/home/vscode/.local/share/decompnet,type=volume"
+    "source=decompdecomp-toolchains,target=/home/vscode/.local/share/decompnet,type=volume",
+    "source=/run/desktop/mnt/host/wslg/.X11-unix,target=/tmp/.X11-unix,type=bind",
+    "source=/run/desktop/mnt/host/wslg,target=/mnt/wslg,type=bind"
   ],
   "postCreateCommand": "uv sync",
   // a checkout is the development copy: port 6474 (app/edition.py). VS Code tunnels it; nothing is published.
