@@ -769,3 +769,37 @@ def test_a_sync_with_nothing_new_leaves_the_functions_alone(fork):
     net.forks.sync(slug, log=lambda *_: None)
     functions = net.store.one("SELECT COUNT(*) n FROM functions")["n"]
     assert net.store.conn.total_changes - before < functions
+
+
+def test_look_alikes_read_only_the_rows_of_their_own_files(tmp_path, monkeypatch):
+    """Each claim gets a brief, and the brief finds look-alikes (similar). Before, it read all the rows of the project
+    for each claim. With 70 helpers on a DS game of 10,000 functions, this used the threads of the app for one minute,
+    and Stop did not operate. The look-alikes must come only from the rows of the files that have them."""
+    from types import SimpleNamespace
+
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    ops = ["lwz", "addi", "stw", "bl", "cmpwi", "beq", "li", "blr"]
+    index = {f"src/u{u}.c": {"ops": {f"f{u}_{i}": [f"op{u}_{i}"] * 8 for i in range(5)}} for u in range(400)}
+    index["src/u7.c"]["ops"]["twin"] = list(ops)  # the one look-alike of the target, in its own file
+    index["src/target.c"] = {"ops": {"target": list(ops)}}
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,root,config) VALUES('ds','ds',?,'{}')",
+                         (str(tmp_path),)).lastrowid
+        for unit, entry in index.items():
+            for sym in entry["ops"]:
+                db.execute("INSERT INTO functions(project_id,name,unit,meta) VALUES(?,?,?,?)",
+                           (pid, sym, unit, json.dumps({"symbol": sym})))
+    proj = net.store.one("SELECT * FROM projects WHERE id=?", pid)
+    fn = net.store.one("SELECT * FROM functions WHERE name='target'")
+    forks = net.forks
+    monkeypatch.setattr(forks, "_index_of", lambda proj, fp: index)
+    monkeypatch.setattr(forks, "_unit_index", lambda proj, fp, unit: index[unit.name])
+    fp = SimpleNamespace(unit=lambda name: SimpleNamespace(name=name))
+    read = []
+    store_all = net.store.all
+    monkeypatch.setattr(net.store, "all", lambda sql, *args: read.extend(rows := store_all(sql, *args)) or rows)
+
+    hits = forks.similar(proj, fp, fn)
+
+    assert [(r["name"], r["unit"]) for r, _ in hits] == [("twin", "src/u7.c")]
+    assert len(read) <= 10, f"read {len(read)} rows of the project's 2,002 for one look-alike"

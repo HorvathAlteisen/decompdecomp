@@ -185,3 +185,12 @@ def test_the_drop_zone_knows_the_visual_cpp_ids_the_import_knows():
     assert js == {v: {*compilers, *glued} for v, compilers, glued in scratch.RICH_COMPILERS}
     linkers = re.search(r"const RICH_LINKERS = \[(.*?)\];", text, re.S).group(1)
     assert {int(x, 16) for x in re.findall(r"0x[0-9a-f]+", linkers)} == scratch.RICH_LINKERS
+
+
+def test_stop_shows_stopping_at_once_and_a_poll_does_not_cancel_the_click():
+    """With 70 helpers at work, Stop and Stop all did not operate. The row changed only when the app answered, one
+    minute later. Also, a poll that drew the list between the press and the release of Stop cancelled the click."""
+    if NODE is None:
+        pytest.skip("needs node to run the GUI's scripts")
+    subprocess.run([NODE, str(Path(__file__).with_name("gui_stop.js"))], check=True,
+                   capture_output=True, text=True, timeout=GUI_TIMEOUT_SECONDS)

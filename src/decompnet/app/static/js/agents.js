@@ -72,11 +72,43 @@ async function renderCosts(force = false) {
   setHtml($("modelAdvice"), advice.map((a) => `<p>${esc(a)}</p>`).join(""));
 }
 
+/* The helpers that the user stopped and that the app does not show as stopped yet. With 70 helpers at work, the answer
+   came after one minute, and the row did not change in that time. Now the row shows "Stopping…" immediately. */
+const STOPPING = new Set();
+
+/* A click is a press and a release on the same button. Before, the poll drew the list again between the press and the
+   release. Then the press and the release went to two different buttons, and the click did not occur. Now the list
+   does not change while the user pushes a button in it. After the release and the click, the list changes. */
+let sessionsPressed = false;
+$("sessions").onpointerdown = () => { sessionsPressed = true; };
+const sessionsReleased = () => {
+  if (!sessionsPressed) return;
+  sessionsPressed = false;
+  setTimeout(() => renderSessions(S.sessions || []));
+};
+addEventListener("pointerup", sessionsReleased);
+addEventListener("pointercancel", sessionsReleased);
+
+async function stopHelpers(ids, body) {
+  ids.forEach((id) => STOPPING.add(id));
+  renderSessions(S.sessions || []);
+  try {
+    await api("/api/agents/stop", { method: "POST", body });
+  } catch (e) {
+    ids.forEach((id) => STOPPING.delete(id));
+    toast(esc(e.message), "err");
+    renderSessions(S.sessions || []);
+  }
+  poll(false);
+}
+
 function renderSessions(sessions) {
+  if (sessionsPressed) return;
   renderCosts();
   const box = $("sessions");
   const board = new Map((S.stats?.agents || []).map((r) => [r.agent, r]));
-  const running = sessions.filter((s) => LIVE.includes(s.state));
+  for (const s of sessions) if (!LIVE.includes(s.state)) STOPPING.delete(s.id);
+  const running = sessions.filter((s) => LIVE.includes(s.state) && !STOPPING.has(s.id));
   const paused = sessions.filter((s) => s.state === "paused");
   $("stopAll").hidden = running.length < 2;
   $("removePaused").hidden = paused.length === 0;
@@ -91,15 +123,16 @@ function renderSessions(sessions) {
       ? `<h3 class="session-group">${group}</h3>` : "";
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "paused" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
-    const live = LIVE.includes(s.state), id = esc(s.id), b = board.get(s.agent);
+    const live = LIVE.includes(s.state), id = esc(s.id), b = board.get(s.agent), stopping = live && STOPPING.has(s.id);
     const facts = [s.task === "readable" ? `<b>polishing</b>` : "", esc(s.kind_name), s.model ? esc(s.model) : "its default model", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.runs ? plural(s.runs, "session") : "",
       s.restarts ? `started again ${plural(s.restarts, "time")}` : "", live && s.started_at ? `since ${hhmm(s.started_at)}` : ""].filter(Boolean);
     const todo = s.todo ? `${sentence(s.todo.replace(/\.$/, ""))}.${s.state === "paused" ? " Then press Start again." : ""}` : "";
     return `${head}<div class="session${rowTint(s.agent)}" data-state="${esc(s.state)}"><div class="session-top"><span class="dot ${dot}"></span><b title="${esc(s.agent)}">${esc(s.label)}</b>
-        ${live ? `<button class="ghost" data-stop="${id}" type="button">Stop</button>`
+        ${stopping ? `<button class="ghost" type="button" disabled>Stopping…</button>`
+          : live ? `<button class="ghost" data-stop="${id}" type="button">Stop</button>`
           : `<button class="ghost" data-again="${id}" type="button">Start again</button><button class="ghost" data-remove="${id}" type="button">Remove</button>`}</div>
-      <span class="state ${s.state === "paused" ? "err" : ""}">${helperState(s, claim)}</span>
+      <span class="state ${s.state === "paused" ? "err" : ""}">${stopping ? "Stopping…" : helperState(s, claim)}</span>
       ${todo ? `<span class="todo-line">${esc(todo)}</span>` : ""}
       ${s.last_message ? `<q class="said" title="${esc(s.last_message)}">${esc(s.last_message)}</q>` : ""}
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -116,7 +149,7 @@ function renderSessions(sessions) {
       poll(false);
     };
   });
-  act("[data-stop]", "/api/agents/stop", (b) => ({ id: b.dataset.stop }));
+  box.querySelectorAll("[data-stop]").forEach((b) => { b.onclick = () => stopHelpers([b.dataset.stop], { id: b.dataset.stop }); });
   act("[data-remove]", "/api/agents/stop", (b) => ({ id: b.dataset.remove, remove: true }));
   act("[data-again]", "/api/agents/restart", (b) => ({ id: b.dataset.again }));
   box.querySelectorAll("[data-log]").forEach((b) => {
@@ -124,10 +157,10 @@ function renderSessions(sessions) {
   });
 }
 $("helperLogClose").onclick = () => { S.logFor = null; renderLog(); renderSessions(S.sessions || []); $("feedTitle").focus(); };
-$("stopAll").onclick = async () => {
-  await api("/api/agents/stop", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+$("stopAll").onclick = () => {
   toast("Stopping every agent on this project.");
-  poll(false);
+  const running = (S.sessions || []).filter((s) => LIVE.includes(s.state)).map((s) => s.id);
+  return stopHelpers(running, { slug: S.slug });
 };
 $("removePaused").onclick = async () => {
   const button = $("removePaused");

@@ -1747,11 +1747,16 @@ class ForkEngine:
             for sym, ops in entry["ops"].items():
                 if (uname, sym) != (fn["unit"], meta.get("symbol")):
                     cands[f"{uname}\0{sym}"] = ops
-        out = []
+        hits = [(*key.split("\0", 1), sim) for key, sim in similarity.rank(target, cands, top=top * 2)]
+        # Read only the rows of the files that have a hit. Each claim gets a brief, and the brief calls this function.
+        # Before, it read all the rows of the project (10,000 rows in a DS game). When 70 helpers made claims at the
+        # same time, they used the threads of the app for one minute. In that time, the app did not answer Stop.
+        units = sorted({uname for uname, _, _ in hits})
         rows = {(r["unit"], self._meta(r).get("symbol")): r for r in self.net.store.all(
-            "SELECT id, name, unit, status, best_score, meta, n_insns FROM functions WHERE project_id=?", proj["id"])}
-        for key, sim in similarity.rank(target, cands, top=top * 2):
-            uname, sym = key.split("\0", 1)
+            "SELECT id, name, unit, status, best_score, meta, n_insns FROM functions WHERE project_id=? AND unit IN "
+            f"({','.join('?' * len(units))})", proj["id"], *units)} if units else {}
+        out = []
+        for uname, sym, sim in hits:
             if (uname, sym) in rows:
                 out.append((rows[(uname, sym)], sim))
         out.sort(key=lambda x: (x[0]["status"] != "matched", -x[1]))
