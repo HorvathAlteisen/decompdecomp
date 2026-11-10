@@ -8,6 +8,7 @@ from importlib import resources
 from typing import Callable
 
 import anyio
+from anyio.lowlevel import RunVar
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -389,6 +390,22 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
 ALWAYS_LOAD = agents.TOOL_META
 
 
+# The threads for the tool calls of the agents. These are not the default threads of the app, because the window uses
+# the default threads. Before, the agents used the default threads too. Then 70 helpers used all of them, and the
+# Stop of the user had to wait.
+AGENT_THREADS = 40
+_agent_threads: RunVar[anyio.CapacityLimiter] = RunVar("agent_threads")
+
+
+def agent_threads() -> anyio.CapacityLimiter:
+    """The limit for the agents' tool calls, one for each event loop."""
+    try:
+        return _agent_threads.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(AGENT_THREADS)
+        _agent_threads.set(limiter)
+        return limiter
+
 def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]]) -> MCPServer:
     """MCP server for CLI agents. `agent_of` maps a request to (agent, project slug)."""
     mcp = MCPServer(name="decomp", title="decompdecomp", instructions=INSTRUCTIONS, version=__version__)
@@ -399,7 +416,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
-            return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args)))
+            return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args)),
+                                                  limiter=agent_threads())
         except NetworkError as e:
             raise ToolError(str(e)) from None
 

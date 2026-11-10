@@ -724,3 +724,54 @@ def test_the_map_brings_polished_and_set_aside_and_changes_when_a_function_is_po
     assert {"polished", "not_c"} <= set(after["keys"]) and "same" not in after
     rows = {r[after["keys"].index("name")]: dict(zip(after["keys"], r)) for r in after["rows"]}
     assert rows["func_0"]["polished"] and not rows["func_1"]["polished"]
+
+
+def test_stop_answers_while_the_agents_tool_calls_hold_their_threads(tmp_path, monkeypatch):
+    """With 70 helpers at work, their tool calls used all the threads of the app. The Stop of the window waited for a
+    free thread for one minute or more. The requests of the window must not wait for the tool calls of the agents."""
+    from mcp.server.mcpserver import Context
+
+    from decompnet.app import tools
+    from decompnet.network import Agent
+
+    class HelperCall(Context):  # a helper's tool call, as its MCP request brings it: with its token
+        @property
+        def headers(self):
+            return {"authorization": "Bearer helper-token"}
+
+    (tmp_path / ".decomp").mkdir()
+    net = RomNetwork(tmp_path / ".decomp" / "decomp.db", tmp_path)
+    mcp, manager, security, _ = build(net, tmp_path / ".decomp", PORT, SECRET)
+    release, started = threading.Event(), []
+
+    def busy(net, agent, slug, **_):  # a tool call that takes long (a big brief, a compile)
+        started.append(agent.name)
+        release.wait(20)
+        return "done"
+
+    monkeypatch.setitem(tools.HANDLERS, "project_info", busy)
+    monkeypatch.setattr(net, "authenticate", lambda token: Agent(1, "helper-1", "local", True))
+    monkeypatch.setattr(manager, "project_of", lambda agent_id: "game")
+    stopped = []
+    monkeypatch.setattr(manager, "stop_project", stopped.append)
+    app = mcp.streamable_http_app(transport_security=security, host="127.0.0.1")
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW) as client:
+        try:
+            for _ in range(70):
+                client.portal.start_task_soon(mcp.call_tool, "project_info", {}, HelperCall(mcp_server=mcp))
+            seen, deadline = -1, time.time() + 10
+            while len(started) != seen and time.time() < deadline:  # until no more tool calls get a thread
+                seen = len(started)
+                time.sleep(0.3)
+            assert started, "no tool call started"
+            answers = []
+            asking = threading.Thread(target=lambda: answers.append(client.post(
+                "/api/agents/stop", json={"slug": "game"}, headers={"X-Decomp": "1"})), daemon=True)
+            asking.start()
+            asking.join(5)
+
+            assert answers, f"Stop got no answer in 5 s while {len(started)} tool calls held their threads"
+            assert answers[0].status_code == 200
+            assert stopped == ["game"]
+        finally:
+            release.set()
