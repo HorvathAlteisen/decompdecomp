@@ -272,6 +272,7 @@ class Twins:
         self.net = net
         self._prints: dict[int, tuple[float, tuple | None, dict[int, Print]]] = {}  # (when, ROM layout, prints)
         self._lock = threading.Lock()
+        self._reading: dict[int, threading.Lock] = defaultdict(threading.Lock)  # project id -> one reads its prints
         self._queue: dict[int, set[int]] = defaultdict(set)  # project id -> newly matched functions to propagate
         self._busy: set[int] = set()
         self._trying: set[int] = set()  # functions a pass is trying now (a full pass and one after a match can overlap)
@@ -286,13 +287,27 @@ class Twins:
         times)."""
         fork = self.net.fork_slug(proj["slug"])
         layout = None if fork else self.net._layout_key(proj)
+
+        def cached():
+            with self._lock:
+                hit = self._prints.get(proj["id"])
+            if hit and (hit[1] == layout if layout is not None else time.time() - hit[0] < FORK_PRINTS_TTL):
+                return hit[2]
+            return None
+
+        if (prints := cached()) is not None:
+            return prints
+        # One thread reads them, the others wait for its prints. Every claim's brief asks for them: when they ran
+        # out, 39 of 70 helpers on a DS game each read the 557 objects again (46 s apiece, all at once), the app had
+        # no thread left for anything else, and its window and Stop got no answer.
         with self._lock:
-            hit = self._prints.get(proj["id"])
-        if hit and (hit[1] == layout if layout is not None else time.time() - hit[0] < FORK_PRINTS_TTL):
-            return hit[2]
-        prints = self._fork_prints(proj) if fork else self._rom_prints(proj)
-        with self._lock:
-            self._prints[proj["id"]] = (time.time(), layout, prints)
+            reading = self._reading[proj["id"]]
+        with reading:
+            if (prints := cached()) is not None:
+                return prints
+            prints = self._fork_prints(proj) if fork else self._rom_prints(proj)
+            with self._lock:
+                self._prints[proj["id"]] = (time.time(), layout, prints)
         return prints
 
     def _rom_prints(self, proj) -> dict[int, Print]:

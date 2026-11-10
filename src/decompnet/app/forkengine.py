@@ -434,6 +434,7 @@ class ForkEngine:
         self._unit_locks: dict[tuple[int, str], threading.RLock] = defaultdict(threading.RLock)
         self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
         self._git_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
+        self._data_reading = threading.Lock()  # one thread reads the data index (_data_index), the others wait
         self._mlock = threading.Lock()
         # (project id, unit) -> (sha1 of its source, base object mtime, {function: match %}): what objdiff said
         # the last time it measured the unit, so a compile doesn't need a second objdiff run to know the baseline
@@ -3389,19 +3390,25 @@ class ForkEngine:
         cached = getattr(self, "_data_idx", None)
         if cached and cached[0] == key:
             return cached[1]
-        index: dict[str, list[str]] = defaultdict(list)
-        for unit in fp.units():
-            if unit.target is None or not unit.target.exists():
-                continue
-            try:
-                with open(unit.target, "rb") as f:
-                    symtab = ELFFile(f).get_section_by_name(".symtab")
-                    for x in symtab.iter_symbols() if symtab else ():
-                        if x.name and x["st_info"]["type"] in ("STT_OBJECT", "STT_NOTYPE") and isinstance(x["st_shndx"], int):
-                            index[x.name].append(unit.name)
-            except Exception:
-                continue
-        self._data_idx = (key, dict(index))
+        # Every brief of a function that uses data comes here. Without the lock, the helpers that asked before the
+        # index was ready each read every object's symbols again, all at the same time.
+        with self._data_reading:
+            cached = getattr(self, "_data_idx", None)
+            if cached and cached[0] == key:
+                return cached[1]
+            index: dict[str, list[str]] = defaultdict(list)
+            for unit in fp.units():
+                if unit.target is None or not unit.target.exists():
+                    continue
+                try:
+                    with open(unit.target, "rb") as f:
+                        symtab = ELFFile(f).get_section_by_name(".symtab")
+                        for x in symtab.iter_symbols() if symtab else ():
+                            if x.name and x["st_info"]["type"] in ("STT_OBJECT", "STT_NOTYPE") and isinstance(x["st_shndx"], int):
+                                index[x.name].append(unit.name)
+                except Exception:
+                    continue
+            self._data_idx = (key, dict(index))
         return self._data_idx[1]
 
     @staticmethod
