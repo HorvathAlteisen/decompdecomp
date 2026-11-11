@@ -1,5 +1,6 @@
 """The local app: GUI API security, demo import, live feed, agent output parsing, the built-in API agent."""
 
+import hashlib
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from decompnet import agents as kinds
-from decompnet import toolchains
+from decompnet import consoles, toolchains
 from decompnet.agents import api
 from decompnet.app import agents, window
 from decompnet.app.engine import RomNetwork
@@ -216,55 +217,134 @@ def test_import_demo_and_follow_it_live(app):
     assert "glabel" in detail["asm"]
 
 
-def test_a_game_is_in_the_project_list_from_the_start_of_its_import(app, tmp_path, monkeypatch):
+class _SlowConsole(consoles.Console):
+    """A PROJECT-mode console for a test. It makes the project of a game when the test permits it (`made`), and the
+    first measurement of the project ends when the test permits it (`measured`): a slow import, one step at a time."""
+    id, name, mode = "slow", "Slow", consoles.PROJECT
+
+    def __init__(self):
+        super().__init__()
+        self.made: dict[str, threading.Event] = {}  # the name of a game -> set when its project can be made
+        self.measured: dict[str, threading.Event] = {}  # the name of a game -> set when its measurement can end
+
+    def game_info(self, game) -> dict:
+        return {"platform": "gc", "id": "g", "title": game.stem, "sha1": hashlib.sha1(game.read_bytes()).hexdigest()}
+
+    def create_project(self, root, game, *, compiler=None, log=print) -> dict:
+        log("making the project")
+        assert self.made[game.stem].wait(10)
+        root.mkdir(parents=True)
+        return {"platform": "gc", "id": "g", "title": game.stem, "compiler": "c"}
+
+
+@pytest.fixture
+def slow_imports(app, tmp_path, monkeypatch):
+    """Imports that go through the engine with `_SlowConsole`. Gives a function that starts the import of a new game
+    and the console. At the end, it lets all imports complete and removes their projects."""
+    from decompnet.app.forkengine import ForkEngine
+
+    client, net, _ = app
+    console, jobs = _SlowConsole(), []
+    monkeypatch.setattr(consoles, "identify", lambda data: console)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+
+    def check(self, slug, log=print):
+        log("measuring the project")
+        assert console.measured[net._project(slug)["name"]].wait(10)
+    monkeypatch.setattr(ForkEngine, "check", check)
+
+    def start(name: str) -> None:
+        game = tmp_path / f"{name}.bin"
+        game.write_bytes(name.encode())
+        console.made[name], console.measured[name] = threading.Event(), threading.Event()
+        steps = len(jobs)
+        jobs.append(client.post("/api/import", params={"confirmed": "1", "path": str(game)},
+                                headers={"X-Decomp": "1"}).json()["job"])
+        _until(lambda: len(client.get("/api/job", params={"id": jobs[steps]}).json()["log"]) > 0)
+
+    before = [p["slug"] for p in client.get("/api/projects").json()]
+    yield start, console
+    for event in [*console.made.values(), *console.measured.values()]:
+        event.set()
+    _until(lambda: all(client.get("/api/job", params={"id": job}).json()["state"] != "running" for job in jobs))
+    for p in client.get("/api/projects").json():
+        if p["slug"] not in before:
+            net.remove_project(p["slug"])
+
+
+def _until(done) -> None:
+    for _ in range(1000):
+        if done():
+            return
+        time.sleep(0.01)
+    raise AssertionError("the import did not get to this step in 10 seconds")
+
+
+def _shown(client) -> list[dict]:
+    """The list of projects, with only what tells a game that is imported from a project."""
+    return [{k: p[k] for k in ("slug", "title", "importing") if k in p} for p in client.get("/api/projects").json()]
+
+
+def test_a_game_is_in_the_project_list_from_the_start_of_its_import(app, slow_imports):
     """Before, the list of projects showed nothing of a game until its import completed (minutes for a big game). The
     game is in the list from the start of its import, with the mark `importing` (the step of the import). A project
     that is in the database before its import completes (a PROJECT-mode game, before its first measurement) has the
     same mark and replaces that line. The mark goes away when the import completes."""
-    from .test_loading import tiny_game
+    client, _, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    start("my-game")
+    assert _shown(client) == [{"title": "my-game.bin", "importing": "making the project"}] + before
+    console.made["my-game"].set()
+    _until(lambda: "slug" in _shown(client)[0])
+    _until(lambda: _shown(client)[0]["importing"] == "measuring the project")
+    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game", "importing": "measuring the project"}] + before
+    console.measured["my-game"].set()
+    _until(lambda: "importing" not in _shown(client)[0])
+    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game"}] + before
 
-    client, net, _ = app
-    game = tmp_path / "my-game.z64"
-    game.write_bytes(b"own game")
-    split, registered, measured = threading.Event(), threading.Event(), threading.Event()
 
-    def import_rom(data, *, log, **_):
-        log("splitting the game")
-        assert split.wait(5)
-        tiny_game(net, "imported-game")
-        log("measuring the project")
-        registered.set()
-        assert measured.wait(5)
-        return "imported-game"
+def test_an_import_that_does_not_end_does_not_mark_the_project_of_a_different_import(app, slow_imports):
+    """The import of a disc image did not end, and a second game was imported after it started. The list showed the
+    project of the second game with the mark of the first import, and the line of the first game was not there.
+    Each import marks only the project that it made."""
+    client, _, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    start("stuck-game")
+    start("quick-game")
+    console.made["quick-game"].set()
+    console.measured["quick-game"].set()
+    _until(lambda: len(_shown(client)) == len(before) + 2 and "importing" not in _shown(client)[1])
+    assert _shown(client) == [{"title": "stuck-game.bin", "importing": "making the project"},
+                              {"slug": "quick-game-g", "title": "quick-game"}] + before
 
-    monkeypatch.setattr(net, "import_rom", import_rom)
-    before = client.get("/api/projects").json()
-    job = client.post("/api/import", params={"confirmed": "1", "path": str(game)}, headers={"X-Decomp": "1"}).json()["job"]
+
+@pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None, reason="needs gcc-2.7.2-kmc")
+def test_a_rom_game_is_one_entry_in_the_list_while_its_import_completes(tmp_path, monkeypatch):
+    """A ROM-mode import puts the project in the database and then continues (the work of the console after the
+    import). During that time the list showed the game two times: as the line of the import and as the project. The
+    project has the mark and replaces the line."""
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    mcp, _, security, _ = build(net, tmp_path, PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
+    stored, go_on = threading.Event(), threading.Event()
+
+    def after_import(net, slug, chosen=None, log=print):
+        stored.set()
+        assert go_on.wait(10)
+    monkeypatch.setattr(consoles.get("n64"), "after_import", after_import)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+    job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
     try:
-        for _ in range(500):
-            if client.get("/api/job", params={"id": job}).json()["log"]:
-                break
-            time.sleep(0.01)
-        assert client.get("/api/projects").json() == [{"title": "my-game.z64", "importing": "splitting the game"}] + before
-        split.set()
-        assert registered.wait(5)
-        listed = client.get("/api/projects").json()
-        assert listed[0]["slug"] == "imported-game" and listed[0]["importing"] == "measuring the project"
-        assert listed[1:] == before
+        assert stored.wait(60)
+        (project,) = _shown(client)
+        assert project["slug"] == "demo-quest-64" and project["importing"]
     finally:
-        split.set()
-        measured.set()
-    for _ in range(500):
-        if client.get("/api/job", params={"id": job}).json()["state"] != "running":
-            break
-        time.sleep(0.01)
-    listed = client.get("/api/projects").json()
-    assert listed[0]["slug"] == "imported-game" and "importing" not in listed[0] and listed[1:] == before
-    with net.store.tx() as db:
-        db.execute("DELETE FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
-        db.execute("DELETE FROM context_versions WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
-        db.execute("DELETE FROM events WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
-        db.execute("DELETE FROM projects WHERE slug='imported-game'")
+        go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert _shown(client) == [{"slug": "demo-quest-64", "title": "DEMO QUEST 64"}]
 
 
 def test_an_uploaded_game_is_listed_while_it_is_copied_and_not_after_a_refused_upload(app):

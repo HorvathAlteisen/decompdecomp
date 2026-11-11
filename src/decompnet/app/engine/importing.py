@@ -342,6 +342,7 @@ class ImportMixin:
             self.surveys.pop(slug, None)
             self.twins.stop(slug)
             self.permuter.stop(slug)
+        getattr(log, "project", lambda slug: None)(slug)  # the job of the import marks this project until it completes
         console.after_import(self, slug, chosen=chosen, log=log)
         if reimport is not None and backup is not None:
             try:

@@ -63,25 +63,22 @@ def register(app: App) -> None:
             except NetworkError:
                 pass
 
-    importing: list[dict] = []  # the imports that run, oldest first: {"title", "known", "job"} (api_import)
+    importing: list[dict] = []  # the imports that run, oldest first: {"title", "job", "slug"} (api_import)
 
     def preparing() -> tuple[list[dict], dict[str, str]]:
         """The imports that run, for the list of projects. Before, the list showed nothing of an import until the
         import completed (minutes for a big game). Gives a line for each game that has no project (newest first),
-        and a mark for each project that is in the database before its import completes (a PROJECT-mode game,
-        before its first measurement). The line and the mark contain the step of the import. An import does not
-        tell which project it made: the oldest project that was not in the database when the import started is
-        that project.
-        shortcut: a project that a different function makes during an import (a saved project, a public decomp)
-        has the mark until that import completes; upgrade when the engine tells a job which project it made."""
+        and a mark for each project that is in the database before its import completes (a ROM-mode game, during
+        the work of the console after the import; a PROJECT-mode game, before its first measurement). The line and
+        the mark contain the step of the import. The engine tells the import which project it made (`log.project`:
+        `_import_split` in engine/importing.py, `create_scratch` in forkengine.py). An import marks only that
+        project: an import that did not end marked the project of a different import that started after it."""
         lines, marks = [], {}
-        slugs = [p["slug"] for p in net.store.all("SELECT slug FROM projects ORDER BY id")]
         for entry in [e for e in list(importing) if e["title"]]:
             said = [line.strip() for line in list(jobs.jobs.get(entry.get("job"), {}).get("log", [])) if line.strip()]
             step = said[-1] if said else "starting"
-            own = next((s for s in slugs if s not in entry["known"] and s not in marks), None)
-            if own:
-                marks[own] = step
+            if entry.get("slug"):
+                marks[entry["slug"]] = step
             else:
                 lines.insert(0, {"title": entry["title"], "importing": step})
         return lines, marks
@@ -178,11 +175,10 @@ def register(app: App) -> None:
 
     async def start_import(request: Request, entry: dict) -> Response:
         """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path.
-        `entry`: its line in `importing`. The line gets the name of the game when the name is known, and the job
-        when the job starts."""
+        `entry`: its line in `importing`. The line gets the name of the game when the name is known, the job when
+        the job starts, and the project when the project is in the database."""
         if (bad := guard(request, write=True)):
             return bad
-        entry["known"] = await call(lambda: {p["slug"] for p in net.store.all("SELECT slug FROM projects")})
         q = request.query_params
         toolchain = q.get("toolchain") or None
         scope = q.get("scope") or None  # what the project covers, where its console sets library code aside
@@ -248,6 +244,7 @@ def register(app: App) -> None:
             return {"slug": slug}
 
         def listed(log):
+            log.project = lambda slug: entry.update(slug=slug)
             try:
                 return work(log)
             finally:
