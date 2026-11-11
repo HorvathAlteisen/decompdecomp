@@ -23,15 +23,27 @@ async function showHome() {
   show("home");
   resetDrop();
   loadState().catch(() => {});  // the version and the compiler lists: the projects don't wait for them
-  let projects;
-  try { projects = S.projects = await api("/api/projects"); } catch { projects = S.projects || []; }
+  try { S.projects = await api("/api/projects"); } catch { S.projects = S.projects || []; }
   renderNav();
-  const box = $("projects");
+  renderCards();
+}
+
+/* The card of each project on the home page. The sidebar draws the cards again when an import starts or ends
+   (loadNav). */
+function renderCards() {
+  const projects = S.projects, box = $("projects");
   box.innerHTML = "";
   $("recent").hidden = !projects.length;
   $("home").classList.toggle("returning", projects.length > 0);
   for (const p of projects) {
     const pct = codePct(p);
+    if (p.importing) {
+      const card = document.createElement("article");
+      card.className = "card";
+      card.innerHTML = importingProjectHtml(p);
+      box.append(card);
+      continue;
+    }
     if (p.missing) {
       const card = document.createElement("article");
       card.className = "card missing";
@@ -59,6 +71,13 @@ async function showHome() {
     box.append(a);
     requestAnimationFrame(() => { a.querySelector(".meter i").style.width = pct + "%"; });
   }
+}
+
+/* The card of a game that is imported. The game is in the list from the start of its import (routes/state.py). */
+function importingProjectHtml(p) {
+  return `<div class="cc-top"><span class="plat">${esc(p.platform_short || "new")}</span><span class="grow"></span><span class="spin-dot" aria-hidden="true"></span></div>
+    <div><h4>${esc(p.title)}</h4><p class="meta">decompdecomp prepares this game. The project opens when it is ready.</p></div>
+    <div class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></div>`;
 }
 
 /* A project whose folder was deleted from the computer: its database records can still be removed here. */
@@ -500,16 +519,18 @@ async function runImport(query, file, title, name = "") {
     const s = Math.round((Date.now() - t0) / 1000);
     $("busyTime").textContent = s >= 3 ? ` · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "";
   }, 1000);
+  let listed = false;  // the list of projects was requested again: the server has the game from the first bytes of the upload
   try {
     let started;
     if (file instanceof Blob) {
       started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(name || file.name || "game.bin")}`, file,
-        (p) => { $("impUp").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; $("busyTitle").textContent = p < 1 ? `Copying ${title.replace(/^\w+ /, "")} into decompdecomp… ${(p * 100).toFixed(0)}%` : title; });
+        (p) => { if (!listed) { listed = true; loadNav(); } $("impUp").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; $("busyTitle").textContent = p < 1 ? `Copying ${title.replace(/^\w+ /, "")} into decompdecomp… ${(p * 100).toFixed(0)}%` : title; });
     } else {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }
     $("impUp").hidden = true;
     $("impWork").hidden = false;
+    loadNav();
     const res = await followJob(started.job, $("jobLog"), (log) => {
       const last = log.filter((l) => l.trim()).pop();
       if (last) $("busyStep").textContent = last.trim().replace(/\s+/g, " ").slice(0, 120);
@@ -517,6 +538,7 @@ async function runImport(query, file, title, name = "") {
     loadNav();
     location.hash = `#/p/${res.slug}`;
   } catch (e) {
+    loadNav();
     importFailed(name || title.replace(/^\w+ |…$/g, ""), e, $("jobLog").textContent);
   } finally { clearInterval(tick); $("busyTime").textContent = ""; $("impWork").hidden = true; }
 }

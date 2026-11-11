@@ -102,6 +102,25 @@ def test_a_project_whose_folder_is_missing_says_so_and_can_be_removed(gui):
     assert missing["notes"] == ["Project removed from decompdecomp."]
 
 
+def test_a_game_being_imported_shows_at_once_with_a_spinner(gui):
+    """Before, an import showed nothing in the list of projects until it completed. The sidebar and the home page
+    show the game from the start of its import, with a spinner and a progress bar, and with no project to open. When
+    the project is in the database, they show the project with the spinner. When the import completes, they show the
+    project as all other projects. The cards of the home page are drawn again only when an import starts or ends.
+    The import requests the list immediately after its job starts."""
+    importing = gui["checks"]["importing"]
+    for shown in (importing["started"]["nav"].split("</div>")[0], importing["started"]["cards"][0]):
+        assert "my &lt;game&gt;.z64" in shown and "spin-dot" in shown and 'class="workbar"' in shown
+        assert "href" not in shown
+    assert len(importing["started"]["cards"]) == 2 and "spin-dot" not in importing["started"]["cards"][1]
+    registered = importing["registered"]
+    assert 'href="#/p/new"' in registered["nav"] and "spin-dot" in registered["nav"] and "my &lt;game&gt;" not in registered["nav"]
+    assert "New Game" in registered["cards"][0] and "spin-dot" in registered["cards"][0]
+    assert importing["same"] == []
+    assert "spin-dot" not in importing["done"]["nav"] and "spin-dot" not in "".join(importing["done"]["cards"])
+    assert importing["calls"] == ["/api/import", "/api/projects", "/api/job"]
+
+
 def test_a_ds_rom_is_told_by_its_header_as_the_server_tells_it(gui):
     nds = gui["checks"]["nds"]
     assert nds["good"] == ["nds", "ADQE", "DEMOQUESTDS"]

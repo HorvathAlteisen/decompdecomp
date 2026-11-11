@@ -12,10 +12,14 @@ function markNav() {
 /* One ask at a time: when the list took longer than 5 s (11 s with two projects whose game file was gone), the
    timer's asks piled up and kept the app's workers busy. One asked for meanwhile (a project renamed) goes after it. */
 let navLoading = false, navAgain = false;
+/* The games that are imported at this time, as the list has them. When they change, the cards of the home page are
+   drawn again (the home page draws its cards only when it opens). */
+const importingNow = () => JSON.stringify(S.projects.filter((p) => p.importing).map((p) => [p.slug, p.title]));
 async function loadNav(timer = false) {
   if (document.hidden && S.projects.length) return;  // the window is minimised: nobody sees the list
   if (navLoading) { navAgain = navAgain || !timer; return; }
   navLoading = true;
+  const importing = importingNow();
   try { S.projects = await api("/api/projects"); } catch (e) {
     if (!S.projects?.length) $("navProjects").innerHTML = `<p class="nav-empty">Couldn't load your projects: ${esc(e.message)}</p>`;
     return;
@@ -24,6 +28,7 @@ async function loadNav(timer = false) {
     if (navAgain) { navAgain = false; loadNav(); }
   }
   renderNav();
+  if (importingNow() !== importing) renderCards();
 }
 /* Each project's colour, the same in the sidebar and in every notification, so a glance says which game it was. In
    the order the projects were made (app.css orders the colours so that neighbours differ most): a new project never
@@ -34,13 +39,21 @@ function colourOf(slug) {
   return i < S.projects.length ? i % PROJECT_COLOURS : 0;
 }
 
+/* A game that is imported (`importing`: the step of its import, routes/state.py) is in the list from the start of
+   the import, with a spinner. Before, an import showed nothing here until it completed. The game has no project to
+   open until its project is in the database. */
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
   box.innerHTML = S.projects.map((p) => {
     const pct = codePct(p);
     const short = p.platform_short || p.platform_name || "?";
-    const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
+    if (p.importing && !p.slug) return `<div class="nav-proj" title="${esc(p.importing)}">
+      <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span></span>
+      <span class="np-meta"><span>in preparation</span></span>
+      <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></div>`;
+    const state = p.importing ? `<span class="spin-dot" title="${esc(p.importing)}"></span>`
+      : p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
     if (p.missing) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.missing)}">
       <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
@@ -50,7 +63,7 @@ function renderNav() {
       <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
     return `<a class="nav-proj" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.progress_error || p.title)}">
       <span class="np-top"><span class="swatch pc-${colourOf(p.slug)}" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
-      <span class="np-meta"><span>${p.progress_error ? "progress needs attention" : esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
+      <span class="np-meta"><span>${p.progress_error ? "progress needs attention" : esc(short)}</span><span class="grow"></span><span>${p.importing ? "in preparation" : p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
       <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
   }).join("");
   setWidths(box);

@@ -216,6 +216,84 @@ def test_import_demo_and_follow_it_live(app):
     assert "glabel" in detail["asm"]
 
 
+def test_a_game_is_in_the_project_list_from_the_start_of_its_import(app, tmp_path, monkeypatch):
+    """Before, the list of projects showed nothing of a game until its import completed (minutes for a big game). The
+    game is in the list from the start of its import, with the mark `importing` (the step of the import). A project
+    that is in the database before its import completes (a PROJECT-mode game, before its first measurement) has the
+    same mark and replaces that line. The mark goes away when the import completes."""
+    from .test_loading import tiny_game
+
+    client, net, _ = app
+    game = tmp_path / "my-game.z64"
+    game.write_bytes(b"own game")
+    split, registered, measured = threading.Event(), threading.Event(), threading.Event()
+
+    def import_rom(data, *, log, **_):
+        log("splitting the game")
+        assert split.wait(5)
+        tiny_game(net, "imported-game")
+        log("measuring the project")
+        registered.set()
+        assert measured.wait(5)
+        return "imported-game"
+
+    monkeypatch.setattr(net, "import_rom", import_rom)
+    before = client.get("/api/projects").json()
+    job = client.post("/api/import", params={"confirmed": "1", "path": str(game)}, headers={"X-Decomp": "1"}).json()["job"]
+    try:
+        for _ in range(500):
+            if client.get("/api/job", params={"id": job}).json()["log"]:
+                break
+            time.sleep(0.01)
+        assert client.get("/api/projects").json() == [{"title": "my-game.z64", "importing": "splitting the game"}] + before
+        split.set()
+        assert registered.wait(5)
+        listed = client.get("/api/projects").json()
+        assert listed[0]["slug"] == "imported-game" and listed[0]["importing"] == "measuring the project"
+        assert listed[1:] == before
+    finally:
+        split.set()
+        measured.set()
+    for _ in range(500):
+        if client.get("/api/job", params={"id": job}).json()["state"] != "running":
+            break
+        time.sleep(0.01)
+    listed = client.get("/api/projects").json()
+    assert listed[0]["slug"] == "imported-game" and "importing" not in listed[0] and listed[1:] == before
+    with net.store.tx() as db:
+        db.execute("DELETE FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
+        db.execute("DELETE FROM context_versions WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
+        db.execute("DELETE FROM events WHERE project_id=(SELECT id FROM projects WHERE slug='imported-game')")
+        db.execute("DELETE FROM projects WHERE slug='imported-game'")
+
+
+def test_an_uploaded_game_is_listed_while_it_is_copied_and_not_after_a_refused_upload(app):
+    """A dropped game is sent to the app before its import starts (a disc image has hundreds of megabytes). The game
+    is in the list of projects from its first bytes. An upload that the app refuses (an empty file) leaves no line."""
+    import asyncio
+
+    client, _, _ = app
+    headers = WINDOW | {"X-Decomp": "1"}
+    seen = []
+
+    async def upload():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{PORT}", headers=headers) as http:
+            before = (await http.get("/api/projects")).json()
+
+            async def body():
+                yield b""
+                seen.append((await http.get("/api/projects")).json())  # (the app waits for the next part)
+
+            refused = await http.post("/api/import", params={"confirmed": "1", "name": "dropped-game.bin"}, content=body())
+            return before, refused, (await http.get("/api/projects")).json()
+
+    before, refused, after = asyncio.run(upload())
+    assert seen == [[{"title": "dropped-game.bin", "importing": "starting"}] + before]
+    assert refused.status_code == 400 and "empty" in refused.json()["error"]
+    assert after == before
+
+
 def test_the_home_page_waits_for_no_agent_and_no_projects_files(tmp_path, monkeypatch):
     """The first /api/state ran every agent's --version and `agy models` (3.7 s before the home page showed), and the
     project list built every project's whole overview every 5 s, a fork's files included (2.5-3.7 s with agents at

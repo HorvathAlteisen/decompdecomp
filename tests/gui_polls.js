@@ -39,7 +39,7 @@ const toasts = [], errors = [];
 const savedLocal = new Map();  // localStorage: the GUI keeps its own choices there (base.js, pages.js, agents.js)
 process.on("unhandledRejection", (e) => errors.push(String(e && e.stack || e)));
 const ctx = {
-  console, fetch, Promise, Map, Set, JSON, Math, Date, Object, Array, String, Number, Symbol, Error, RegExp, Uint8Array, URLSearchParams,
+  console, fetch, Promise, Map, Set, JSON, Math, Date, Object, Array, String, Number, Symbol, Error, RegExp, Uint8Array, URLSearchParams, Blob,
   setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
   requestAnimationFrame: () => 0, performance: { now: () => 0 }, navigator: stub(), URLSearchParams,
   localStorage: {
@@ -438,6 +438,41 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       S.projects = was.projects; dialog = was.dialog; api = was.api;
       showHome = was.showHome; loadNav = was.loadNav; toast = was.toast;
       document.getElementById = original;
+    }
+  })()`, ctx);
+  // a game that is imported: the sidebar and the home page show it from the start of its import, with a spinner. The
+  // import requests the list immediately after its job starts (the timer of the list comes every 5 s)
+  checks.importing = await vm.runInContext(`(async () => {
+    const was = { projects: S.projects, api, importFailed };
+    const nav = { innerHTML: "", querySelectorAll: () => [] }, cards = [], calls = [];
+    const box = { set innerHTML(_) { cards.length = 0; }, append: (card) => cards.push(card.innerHTML) };
+    const original = document.getElementById;
+    document.getElementById = (id) => (id === "navProjects" ? nav : id === "projects" ? box : original(id));
+    const game = { slug: "old", title: "Old Game", platform_short: "N64", bytes: 100, matched_bytes: 50 };
+    let list = [{ title: "my <game>.z64", importing: "splitting the game" }, game];
+    api = async (url) => {
+      calls.push(url.split("?")[0]);
+      return url.startsWith("/api/projects") ? list : url.startsWith("/api/import") ? { job: "j" }
+        : { state: "done", log: [], result: { slug: "new" } };
+    };
+    try {
+      S.projects = [game];
+      await loadNav();
+      const started = { nav: nav.innerHTML, cards: [...cards] };
+      list = [{ ...game, slug: "new", title: "New Game", kind: "fork", ready: false, importing: "measuring the project" }, game];
+      await loadNav();
+      const registered = { nav: nav.innerHTML, cards: [...cards] };
+      cards.length = 0;
+      await loadNav();  // the import did not change: the cards are not drawn again
+      const same = [...cards];
+      list = [{ ...game, slug: "new", title: "New Game" }, game];
+      await loadNav();
+      const done = { nav: nav.innerHTML, cards: [...cards] };
+      calls.length = 0;
+      await runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
+      return { started, registered, same, done, calls: calls.slice(0, 3) };
+    } finally {
+      S.projects = was.projects; api = was.api; document.getElementById = original;
     }
   })()`, ctx);
   // a 2017 game's program dropped before the page's state arrived (review of #138): pickFile waits for the state,
