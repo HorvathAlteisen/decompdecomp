@@ -536,7 +536,7 @@ async function followImport(job, name) {
 function showImport(job) {
   showHome();
   const game = S.projects.find((p) => p.job === job);
-  if (!game) return;
+  if (!game) { location.hash = "#/"; return; }  // the import ended, or the list is not there: no row to mark
   shownImport = job;
   $("dropIdle").hidden = true;
   $("dropBusy").hidden = false;
@@ -551,6 +551,9 @@ function showImport(job) {
 
 async function runImport(query, file, title, name = "") {
   shownImport = "";
+  // the drop zone showed a different import: its address goes, or its row stayed the selected one and did not open
+  // it again (replaceState: a change of the hash opens the home page again, and that hides this import)
+  if (location.hash.startsWith("#/import/")) history.replaceState(null, "", "#/");
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = true;
   $("dropBusy").hidden = false;

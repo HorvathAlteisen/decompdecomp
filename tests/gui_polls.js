@@ -49,6 +49,7 @@ const ctx = {
   },
   matchMedia: () => stub(), getComputedStyle: () => stub(), location: { hash: "", href: "" }, confirm: () => false,
   addEventListener: () => {}, scrollTo: () => {}, devicePixelRatio: 1, document: stub(),
+  history: { replaceState: (state, title, url) => { ctx.location.hash = url; } },
 };
 ctx.window = ctx;
 ctx.costs = [];  // /api/modelcosts rows: the model advice check below sets them
@@ -487,8 +488,20 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
     const ids = ["dropIdle", "dropPicked", "dropBusy", "dropError", "busyTitle", "busyStep", "busyTime", "jobLog", "impUp", "impWork"];
     const panel = Object.fromEntries(ids.map((id) => [id, { hidden: false, textContent: "", firstElementChild: { style: {} } }]));
     const nav = { innerHTML: "", querySelectorAll: () => [] }, box = { innerHTML: "", append: () => {} };
-    const original = document.getElementById;
+    const original = document.getElementById, originalAll = document.querySelectorAll;
     document.getElementById = (id) => panel[id] || (id === "navProjects" ? nav : id === "projects" ? box : original(id));
+    // the rows of the sidebar as renderNav wrote them, for markNav: selected has the rows that markNav made the
+    // selected ones, each by its job or its slug
+    let selected = [];
+    const attr = (tag, name) => (tag.match(new RegExp(name + '="([^"]*)"')) || [])[1];
+    document.querySelectorAll = (what) => {
+      if (what !== ".nav-proj") return originalAll(what);
+      selected = [];
+      return [...nav.innerHTML.matchAll(/<(?:a|div)[^>]*class="nav-proj[^>]*>/g)].map(([tag]) => ({
+        dataset: { job: attr(tag, "data-job"), slug: attr(tag, "data-slug") },
+        classList: { toggle: (name, on) => { if (name === "on" && on) selected.push(attr(tag, "data-job") || attr(tag, "data-slug")); } },
+      }));
+    };
     const timers = [], intervals = [], asked = [];
     setTimeout = (fn) => { timers.push(fn); return 0; };
     setInterval = (fn) => { intervals.push(fn); return 0; };
@@ -507,7 +520,8 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
         : url.startsWith("/api/job") ? JSON.parse(JSON.stringify(jobs[url.split("id=")[1]])) : was.api(url, options);
     };
     const seen = () => ({ idle: !panel.dropIdle.hidden, busy: !panel.dropBusy.hidden, title: panel.busyTitle.textContent,
-                          step: panel.busyStep.textContent, log: panel.jobLog.textContent, time: panel.busyTime.textContent });
+                          step: panel.busyStep.textContent, log: panel.jobLog.textContent, time: panel.busyTime.textContent,
+                          selected: [...selected] });
     try {
       S.projects = list;
       runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
@@ -529,15 +543,17 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       const still = seen();
       runImport("demo=1", undefined, "Opening Demo Quest 64…");  // a new import starts while the drop zone shows an import
       await turn();
-      const fresh = seen();
+      const fresh = seen(), freshAddress = location.hash;
+      click("gone");  // the address of an import that ended
+      const gone = { address: location.hash, selected: [...selected] };
       jobs.k.state = "done";
       jobs.k.result = { slug: "other-game" };
       await turn();
-      return { started, left, back, askedAgain, other, still, fresh, opened: location.hash, row: nav.innerHTML };
+      return { started, left, back, askedAgain, other, still, fresh, freshAddress, gone, opened: location.hash, row: nav.innerHTML };
     } finally {
       S.projects = was.projects; api = was.api; setTimeout = was.setTimeout; setInterval = was.setInterval;
       Date.now = was.now; location.hash = was.hash;
-      document.getElementById = original;
+      document.getElementById = original; document.querySelectorAll = originalAll;
     }
   })()`, ctx);
   // a 2017 game's program dropped before the page's state arrived (review of #138): pickFile waits for the state,

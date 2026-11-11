@@ -7,7 +7,9 @@ function markNav() {
   const h = location.hash || "#/";
   const route = h.startsWith("#/p/") ? "project" : (h.replace("#/", "") || "home");
   document.querySelectorAll(".nav [data-route]").forEach((a) => a.classList.toggle("on", a.dataset.route === route));
-  document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", a.dataset.slug === S.slug && route === "project"));
+  // the row of an import is the selected one while the home page shows the progress of that import (showImport)
+  const job = h.startsWith("#/import/") ? h.slice("#/import/".length) : "";
+  document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", job ? a.dataset.job === job : a.dataset.slug === S.slug && route === "project"));
 }
 /* One ask at a time: when the list took longer than 5 s (11 s with two projects whose game file was gone), the
    timer's asks piled up and kept the app's workers busy. One asked for meanwhile (a project renamed) goes after it. */
@@ -48,7 +50,7 @@ function renderNav() {
   box.innerHTML = S.projects.map((p) => {
     const pct = codePct(p);
     const short = p.platform_short || p.platform_name || "?";
-    if (p.importing) return `<${p.job ? `a href="#/import/${esc(p.job)}"` : "div"} class="nav-proj" title="${esc(p.importing)}">
+    if (p.importing) return `<${p.job ? `a href="#/import/${esc(p.job)}" data-job="${esc(p.job)}"` : "div"} class="nav-proj" title="${esc(p.importing)}">
       <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span></span>
       <span class="np-meta"><span class="np-step">${esc(p.importing)}</span></span>
       <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></${p.job ? "a" : "div"}>`;

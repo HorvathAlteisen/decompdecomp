@@ -132,23 +132,30 @@ def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
     (its step, its log and its time). This is also true for an import that the page did not start. The drop zone
     shows one import at a time: a different import that continues does not write its step or its time into it, and a
     new import takes the drop zone. The page asks for an import one time in each interval, also after its row
-    opened it again. When an import completes, its project opens."""
+    opened it again. When an import completes, its project opens.
+
+    The row of the import that the drop zone shows is the selected row, as the row of an open project is: it had no
+    frame. A new import takes the address of the import that was shown, and the address of an import that ended
+    becomes the address of the home page: the row of a different import does not stay the selected one."""
     progress = gui["checks"]["importProgress"]
     assert 'href="#/import/j"' in progress["row"] and '<span class="np-step">splitting the game</span>' in progress["row"]
     assert progress["started"]["busy"] and not progress["started"]["idle"]
-    assert progress["started"]["step"] == "splitting the game"
+    assert progress["started"]["step"] == "splitting the game" and progress["started"]["selected"] == []
     assert progress["left"]["idle"] and not progress["left"]["busy"]
     back = progress["back"]
     assert back["busy"] and not back["idle"] and "my-game.z64" in back["title"]
     assert back["step"] == "disassembling every function"
     assert back["log"] == "splitting the game\ndisassembling every function"
-    assert back["time"] == " · 1:00" and progress["askedAgain"] == 1
+    assert back["time"] == " · 1:00" and progress["askedAgain"] == 1 and back["selected"] == ["j"]
     other = progress["other"]
     assert other["busy"] and "other-game.iso" in other["title"]
     assert other["step"] == "reading the disc" and other["log"] == "reading the disc" and other["time"] == ""
+    assert other["selected"] == ["k"]
     assert progress["still"] == other
     fresh = progress["fresh"]
     assert fresh["busy"] and fresh["title"] == "Opening Demo Quest 64…" and fresh["step"] == "finding the code segments"
+    assert fresh["selected"] == [] and progress["freshAddress"] == "#/"
+    assert progress["gone"] == {"address": "#/", "selected": []}
     assert progress["opened"] == "#/p/other-game"
 
 
