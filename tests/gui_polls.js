@@ -445,7 +445,7 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
   checks.importing = await vm.runInContext(`(async () => {
     const was = { projects: S.projects, api, importFailed };
     const nav = { innerHTML: "", querySelectorAll: () => [] }, cards = [], calls = [];
-    const box = { set innerHTML(_) { cards.length = 0; }, append: (card) => cards.push(card.innerHTML) };
+    const box = { set innerHTML(_) { cards.length = 0; }, append: (card) => cards.push(card.href + "|" + card.innerHTML) };
     const original = document.getElementById;
     document.getElementById = (id) => (id === "navProjects" ? nav : id === "projects" ? box : original(id));
     const game = { slug: "old", title: "Old Game", platform_short: "N64", bytes: 100, matched_bytes: 50 };
@@ -459,7 +459,10 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       S.projects = [game];
       await loadNav();
       const started = { nav: nav.innerHTML, cards: [...cards] };
-      list = [{ ...game, slug: "new", title: "New Game", kind: "fork", ready: false, importing: "measuring the project" }, game];
+      list = [{ title: "my <game>.z64", importing: "splitting the game", job: "j1" }, game];  // its upload ended: its job runs
+      await loadNav();
+      const running = { nav: nav.innerHTML, cards: [...cards] };
+      list = [{ ...game, slug: "new", title: "New Game", kind: "fork", ready: false, importing: "measuring the project", job: "j2" }, game];
       await loadNav();
       const registered = { nav: nav.innerHTML, cards: [...cards] };
       cards.length = 0;
@@ -470,9 +473,71 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       const done = { nav: nav.innerHTML, cards: [...cards] };
       calls.length = 0;
       await runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
-      return { started, registered, same, done, calls: calls.slice(0, 3) };
+      return { started, running, registered, same, done, calls: calls.slice(0, 3) };
     } finally {
       S.projects = was.projects; api = was.api; document.getElementById = original;
+    }
+  })()`, ctx);
+  // the progress of an import comes back: the row of the import opens the home page with its step and its log. The
+  // timers of the page run when the test lets them (`turn`): each import is asked again after a timer, and the time
+  // of an import is written by an interval. The clock is one minute later after the first import started
+  ctx.settle = settle;
+  checks.importProgress = await vm.runInContext(`(async () => {
+    const was = { projects: S.projects, api, setTimeout, setInterval, now: Date.now, hash: location.hash };
+    const ids = ["dropIdle", "dropPicked", "dropBusy", "dropError", "busyTitle", "busyStep", "busyTime", "jobLog", "impUp", "impWork"];
+    const panel = Object.fromEntries(ids.map((id) => [id, { hidden: false, textContent: "", firstElementChild: { style: {} } }]));
+    const nav = { innerHTML: "", querySelectorAll: () => [] }, box = { innerHTML: "", append: () => {} };
+    const original = document.getElementById;
+    document.getElementById = (id) => panel[id] || (id === "navProjects" ? nav : id === "projects" ? box : original(id));
+    const timers = [], intervals = [], asked = [];
+    setTimeout = (fn) => { timers.push(fn); return 0; };
+    setInterval = (fn) => { intervals.push(fn); return 0; };
+    const turn = async () => { timers.splice(0).forEach((fn) => fn()); intervals.forEach((fn) => fn()); await settle(); };
+    const click = (job) => { location.hash = "#/import/" + job; route(); };  // the link of the row of an import
+    const jobs = { j: { state: "running", log: ["splitting the game"], result: null },
+                   k: { state: "running", log: ["reading the disc"], result: null },
+                   m: { state: "running", log: ["finding the code segments"], result: null } };
+    const starts = ["j", "m"];  // the jobs of the imports that the page starts
+    const list = [{ title: "other-game.iso", importing: "reading the disc", job: "k" },
+                  { title: "my-game.z64", importing: "splitting the game", job: "j" },
+                  { slug: "old", title: "Old Game", platform_short: "N64" }];
+    api = async (url, options) => {
+      if (url.startsWith("/api/job")) asked.push(url.split("id=")[1]);
+      return url.startsWith("/api/projects") ? list : url.startsWith("/api/import") ? { job: starts.shift() }
+        : url.startsWith("/api/job") ? JSON.parse(JSON.stringify(jobs[url.split("id=")[1]])) : was.api(url, options);
+    };
+    const seen = () => ({ idle: !panel.dropIdle.hidden, busy: !panel.dropBusy.hidden, title: panel.busyTitle.textContent,
+                          step: panel.busyStep.textContent, log: panel.jobLog.textContent, time: panel.busyTime.textContent });
+    try {
+      S.projects = list;
+      runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
+      await settle();
+      const started = seen();
+      Date.now = () => was.now() + 60000;
+      await showHome();  // the user goes to a different page and comes back to the home page
+      const left = seen();
+      jobs.j.log.push("disassembling every function");
+      asked.length = 0;
+      click("j");
+      await turn();
+      const back = seen(), askedAgain = asked.filter((job) => job === "j").length;
+      click("k");  // an import that this page did not start
+      await turn();
+      const other = seen();
+      jobs.j.log.push("found 95 functions");  // the first import continues, and the drop zone shows the other import
+      await turn();
+      const still = seen();
+      runImport("demo=1", undefined, "Opening Demo Quest 64…");  // a new import starts while the drop zone shows an import
+      await turn();
+      const fresh = seen();
+      jobs.k.state = "done";
+      jobs.k.result = { slug: "other-game" };
+      await turn();
+      return { started, left, back, askedAgain, other, still, fresh, opened: location.hash, row: nav.innerHTML };
+    } finally {
+      S.projects = was.projects; api = was.api; setTimeout = was.setTimeout; setInterval = was.setInterval;
+      Date.now = was.now; location.hash = was.hash;
+      document.getElementById = original;
     }
   })()`, ctx);
   // a 2017 game's program dropped before the page's state arrived (review of #138): pickFile waits for the state,

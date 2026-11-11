@@ -240,7 +240,8 @@ class _SlowConsole(consoles.Console):
 @pytest.fixture
 def slow_imports(app, tmp_path, monkeypatch):
     """Imports that go through the engine with `_SlowConsole`. Gives a function that starts the import of a new game
-    and the console. At the end, it lets all imports complete and removes their projects."""
+    (it gives the job of the import) and the console. At the end, it lets all imports complete and removes their
+    projects."""
     from decompnet.app.forkengine import ForkEngine
 
     client, net, _ = app
@@ -253,7 +254,7 @@ def slow_imports(app, tmp_path, monkeypatch):
         assert console.measured[net._project(slug)["name"]].wait(10)
     monkeypatch.setattr(ForkEngine, "check", check)
 
-    def start(name: str) -> None:
+    def start(name: str) -> str:
         game = tmp_path / f"{name}.bin"
         game.write_bytes(name.encode())
         console.made[name], console.measured[name] = threading.Event(), threading.Event()
@@ -261,6 +262,7 @@ def slow_imports(app, tmp_path, monkeypatch):
         jobs.append(client.post("/api/import", params={"confirmed": "1", "path": str(game)},
                                 headers={"X-Decomp": "1"}).json()["job"])
         _until(lambda: len(client.get("/api/job", params={"id": jobs[steps]}).json()["log"]) > 0)
+        return jobs[steps]
 
     before = [p["slug"] for p in client.get("/api/projects").json()]
     yield start, console
@@ -282,23 +284,25 @@ def _until(done) -> None:
 
 def _shown(client) -> list[dict]:
     """The list of projects, with only what tells a game that is imported from a project."""
-    return [{k: p[k] for k in ("slug", "title", "importing") if k in p} for p in client.get("/api/projects").json()]
+    return [{k: p[k] for k in ("slug", "title", "importing", "job") if k in p} for p in client.get("/api/projects").json()]
 
 
 def test_a_game_is_in_the_project_list_from_the_start_of_its_import(app, slow_imports):
     """Before, the list of projects showed nothing of a game until its import completed (minutes for a big game). The
     game is in the list from the start of its import, with the mark `importing` (the step of the import). A project
     that is in the database before its import completes (a PROJECT-mode game, before its first measurement) has the
-    same mark and replaces that line. The mark goes away when the import completes."""
+    same mark and replaces that line. The mark goes away when the import completes. The line and the mark have the
+    job of the import: the page opens the progress of the import with it."""
     client, _, _ = app
     start, console = slow_imports
     before = _shown(client)
-    start("my-game")
-    assert _shown(client) == [{"title": "my-game.bin", "importing": "making the project"}] + before
+    job = start("my-game")
+    assert _shown(client) == [{"title": "my-game.bin", "importing": "making the project", "job": job}] + before
     console.made["my-game"].set()
     _until(lambda: "slug" in _shown(client)[0])
     _until(lambda: _shown(client)[0]["importing"] == "measuring the project")
-    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game", "importing": "measuring the project"}] + before
+    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game", "importing": "measuring the project",
+                               "job": job}] + before
     console.measured["my-game"].set()
     _until(lambda: "importing" not in _shown(client)[0])
     assert _shown(client) == [{"slug": "my-game-g", "title": "my-game"}] + before
@@ -311,12 +315,12 @@ def test_an_import_that_does_not_end_does_not_mark_the_project_of_a_different_im
     client, _, _ = app
     start, console = slow_imports
     before = _shown(client)
-    start("stuck-game")
+    stuck = start("stuck-game")
     start("quick-game")
     console.made["quick-game"].set()
     console.measured["quick-game"].set()
     _until(lambda: len(_shown(client)) == len(before) + 2 and "importing" not in _shown(client)[1])
-    assert _shown(client) == [{"title": "stuck-game.bin", "importing": "making the project"},
+    assert _shown(client) == [{"title": "stuck-game.bin", "importing": "making the project", "job": stuck},
                               {"slug": "quick-game-g", "title": "quick-game"}] + before
 
 
@@ -340,7 +344,7 @@ def test_a_rom_game_is_one_entry_in_the_list_while_its_import_completes(tmp_path
     try:
         assert stored.wait(60)
         (project,) = _shown(client)
-        assert project["slug"] == "demo-quest-64" and project["importing"]
+        assert project["slug"] == "demo-quest-64" and project["importing"] and project["job"] == job
     finally:
         go_on.set()
     _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")

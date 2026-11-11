@@ -105,20 +105,51 @@ def test_a_project_whose_folder_is_missing_says_so_and_can_be_removed(gui):
 def test_a_game_being_imported_shows_at_once_with_a_spinner(gui):
     """Before, an import showed nothing in the list of projects until it completed. The sidebar and the home page
     show the game from the start of its import, with a spinner and a progress bar, and with no project to open. When
-    the project is in the database, they show the project with the spinner. When the import completes, they show the
-    project as all other projects. The cards of the home page are drawn again only when an import starts or ends.
+    the job of the import runs, the row and the card open the progress of the import. When the project is in the
+    database, they show the project with the spinner and the step of the import. When the import completes, they show the project as all other
+    projects. The cards of the home page are drawn again only when an import starts or ends.
     The import requests the list immediately after its job starts."""
     importing = gui["checks"]["importing"]
     for shown in (importing["started"]["nav"].split("</div>")[0], importing["started"]["cards"][0]):
         assert "my &lt;game&gt;.z64" in shown and "spin-dot" in shown and 'class="workbar"' in shown
         assert "href" not in shown
     assert len(importing["started"]["cards"]) == 2 and "spin-dot" not in importing["started"]["cards"][1]
+    running = importing["running"]
+    assert 'href="#/import/j1"' in running["nav"] and running["cards"][0].startswith("#/import/j1|")
     registered = importing["registered"]
-    assert 'href="#/p/new"' in registered["nav"] and "spin-dot" in registered["nav"] and "my &lt;game&gt;" not in registered["nav"]
+    assert "New Game" in registered["nav"] and "spin-dot" in registered["nav"] and "my &lt;game&gt;" not in registered["nav"]
+    assert 'href="#/import/j2"' in registered["nav"] and '<span class="np-step">measuring the project</span>' in registered["nav"]
+    assert registered["cards"][0].startswith("#/import/j2|")
     assert "New Game" in registered["cards"][0] and "spin-dot" in registered["cards"][0]
     assert importing["same"] == []
     assert "spin-dot" not in importing["done"]["nav"] and "spin-dot" not in "".join(importing["done"]["cards"])
     assert importing["calls"] == ["/api/import", "/api/projects", "/api/job"]
+
+
+def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
+    """The home page hid the progress of an import each time it opened, and nothing brought it back. The row of an
+    import in the sidebar shows the step of the import, and it opens the home page with the progress of that import
+    (its step, its log and its time). This is also true for an import that the page did not start. The drop zone
+    shows one import at a time: a different import that continues does not write its step or its time into it, and a
+    new import takes the drop zone. The page asks for an import one time in each interval, also after its row
+    opened it again. When an import completes, its project opens."""
+    progress = gui["checks"]["importProgress"]
+    assert 'href="#/import/j"' in progress["row"] and '<span class="np-step">splitting the game</span>' in progress["row"]
+    assert progress["started"]["busy"] and not progress["started"]["idle"]
+    assert progress["started"]["step"] == "splitting the game"
+    assert progress["left"]["idle"] and not progress["left"]["busy"]
+    back = progress["back"]
+    assert back["busy"] and not back["idle"] and "my-game.z64" in back["title"]
+    assert back["step"] == "disassembling every function"
+    assert back["log"] == "splitting the game\ndisassembling every function"
+    assert back["time"] == " · 1:00" and progress["askedAgain"] == 1
+    other = progress["other"]
+    assert other["busy"] and "other-game.iso" in other["title"]
+    assert other["step"] == "reading the disc" and other["log"] == "reading the disc" and other["time"] == ""
+    assert progress["still"] == other
+    fresh = progress["fresh"]
+    assert fresh["busy"] and fresh["title"] == "Opening Demo Quest 64…" and fresh["step"] == "finding the code segments"
+    assert progress["opened"] == "#/p/other-game"
 
 
 def test_a_ds_rom_is_told_by_its_header_as_the_server_tells_it(gui):

@@ -1,6 +1,10 @@
 "use strict";  // each script is strict on its own (see base.js)
 /* ------------------------------------------------------------------ home */
 let picked = null;
+/* The drop zone shows the progress of one import at a time: `shownImport` is the job of that import ("" when the drop
+   zone shows no import, or the upload of a game whose job did not start). */
+let shownImport = "";
+const followedImports = new Set();  // the jobs of the imports that this page follows to their end
 
 /* Once, after this version's first start: the old `decomp mcp` entries it took out of the agents' settings
    (app/cleanup.py), each a sentence from the app, until the user dismisses them. Those entries started decompdecomp
@@ -38,8 +42,9 @@ function renderCards() {
   for (const p of projects) {
     const pct = codePct(p);
     if (p.importing) {
-      const card = document.createElement("article");
+      const card = document.createElement(p.job ? "a" : "article");
       card.className = "card";
+      if (p.job) card.href = `#/import/${p.job}`;
       card.innerHTML = importingProjectHtml(p);
       box.append(card);
       continue;
@@ -505,7 +510,47 @@ function fillCompilers(select, current, platform, only) {
   }).join("");
 }
 
+/* Follows an import to its end. While the drop zone shows this import, the drop zone gets its step and its log. At
+   the end, the project of the import opens, or the drop zone shows why the import failed. */
+async function followImport(job, name) {
+  if (followedImports.has(job)) return;
+  followedImports.add(job);
+  try {
+    const res = await followJob(job, null, (log) => {
+      if (shownImport !== job) return;
+      $("jobLog").textContent = log.join("\n");
+      $("jobLog").scrollTop = $("jobLog").scrollHeight;
+      const last = log.filter((l) => l.trim()).pop();
+      if (last) $("busyStep").textContent = last.trim().replace(/\s+/g, " ").slice(0, 120);
+    });
+    loadNav();
+    location.hash = `#/p/${res.slug}`;
+  } catch (e) {
+    loadNav();
+    importFailed(name, e, "");
+  } finally { followedImports.delete(job); }
+}
+
+/* The home page with the progress of an import that runs. The row and the card of the import open it
+   (#/import/<job>). Before, the home page hid the progress each time it opened, and nothing showed it again. */
+function showImport(job) {
+  showHome();
+  const game = S.projects.find((p) => p.job === job);
+  if (!game) return;
+  shownImport = job;
+  $("dropIdle").hidden = true;
+  $("dropBusy").hidden = false;
+  $("impUp").hidden = true;
+  $("impWork").hidden = false;
+  $("busyTitle").textContent = `Analysing ${game.title}…`;
+  $("busyStep").textContent = game.importing;
+  $("jobLog").textContent = "";
+  $("busyTime").textContent = "";
+  followImport(job, game.title);
+}
+
 async function runImport(query, file, title, name = "") {
+  shownImport = "";
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = true;
   $("dropBusy").hidden = false;
@@ -515,7 +560,9 @@ async function runImport(query, file, title, name = "") {
   $("impUp").hidden = !(file instanceof Blob);
   $("impWork").hidden = file instanceof Blob;
   const t0 = Date.now();
+  let job = "";  // the job of this import, when it runs
   const tick = setInterval(() => {
+    if (shownImport !== job) return;
     const s = Math.round((Date.now() - t0) / 1000);
     $("busyTime").textContent = s >= 3 ? ` · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "";
   }, 1000);
@@ -531,12 +578,9 @@ async function runImport(query, file, title, name = "") {
     $("impUp").hidden = true;
     $("impWork").hidden = false;
     loadNav();
-    const res = await followJob(started.job, $("jobLog"), (log) => {
-      const last = log.filter((l) => l.trim()).pop();
-      if (last) $("busyStep").textContent = last.trim().replace(/\s+/g, " ").slice(0, 120);
-    });
-    loadNav();
-    location.hash = `#/p/${res.slug}`;
+    job = started.job;
+    if (!shownImport) shownImport = job;
+    await followImport(job, name || title.replace(/^\w+ |…$/g, ""));
   } catch (e) {
     loadNav();
     importFailed(name || title.replace(/^\w+ |…$/g, ""), e, $("jobLog").textContent);

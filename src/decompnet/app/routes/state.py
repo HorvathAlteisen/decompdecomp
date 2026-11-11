@@ -65,22 +65,23 @@ def register(app: App) -> None:
 
     importing: list[dict] = []  # the imports that run, oldest first: {"title", "job", "slug"} (api_import)
 
-    def preparing() -> tuple[list[dict], dict[str, str]]:
+    def preparing() -> tuple[list[dict], dict[str, dict]]:
         """The imports that run, for the list of projects. Before, the list showed nothing of an import until the
         import completed (minutes for a big game). Gives a line for each game that has no project (newest first),
         and a mark for each project that is in the database before its import completes (a ROM-mode game, during
         the work of the console after the import; a PROJECT-mode game, before its first measurement). The line and
-        the mark contain the step of the import. The engine tells the import which project it made (`log.project`:
+        the mark contain the step of the import and, when the job runs, the job: the page opens the progress of the
+        import with it (#/import/<job>). The engine tells the import which project it made (`log.project`:
         `_import_split` in engine/importing.py, `create_scratch` in forkengine.py). An import marks only that
         project: an import that did not end marked the project of a different import that started after it."""
         lines, marks = [], {}
         for entry in [e for e in list(importing) if e["title"]]:
             said = [line.strip() for line in list(jobs.jobs.get(entry.get("job"), {}).get("log", [])) if line.strip()]
-            step = said[-1] if said else "starting"
+            shown = {"importing": said[-1] if said else "starting"} | ({"job": entry["job"]} if "job" in entry else {})
             if entry.get("slug"):
-                marks[entry["slug"]] = step
+                marks[entry["slug"]] = shown
             else:
-                lines.insert(0, {"title": entry["title"], "importing": step})
+                lines.insert(0, {"title": entry["title"]} | shown)
         return lines, marks
 
     def project_list() -> list[dict]:
@@ -106,7 +107,7 @@ def register(app: App) -> None:
                 else:
                     out.append({"slug": p["slug"], "title": p["name"] or p["slug"], "working": 0,
                                 "broken": job_error(e, jobs.log_path)})
-        return lines + [p | {"importing": marks[p["slug"]]} if p["slug"] in marks else p for p in out]
+        return lines + [p | marks.get(p["slug"], {}) for p in out]
 
     @mcp.custom_route("/api/projects", methods=["GET"])
     async def api_projects(request: Request) -> Response:

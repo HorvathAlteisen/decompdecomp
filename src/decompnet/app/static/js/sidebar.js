@@ -14,7 +14,7 @@ function markNav() {
 let navLoading = false, navAgain = false;
 /* The games that are imported at this time, as the list has them. When they change, the cards of the home page are
    drawn again (the home page draws its cards only when it opens). */
-const importingNow = () => JSON.stringify(S.projects.filter((p) => p.importing).map((p) => [p.slug, p.title]));
+const importingNow = () => JSON.stringify(S.projects.filter((p) => p.importing).map((p) => [p.slug, p.title, p.job]));
 async function loadNav(timer = false) {
   if (document.hidden && S.projects.length) return;  // the window is minimised: nobody sees the list
   if (navLoading) { navAgain = navAgain || !timer; return; }
@@ -40,20 +40,19 @@ function colourOf(slug) {
 }
 
 /* A game that is imported (`importing`: the step of its import, routes/state.py) is in the list from the start of
-   the import, with a spinner. Before, an import showed nothing here until it completed. The game has no project to
-   open until its project is in the database. */
+   the import, with a spinner and the step. Before, an import showed nothing here until it completed. Its row opens
+   the progress of the import on the home page (showImport), when the job of the import runs (`job`). */
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
   box.innerHTML = S.projects.map((p) => {
     const pct = codePct(p);
     const short = p.platform_short || p.platform_name || "?";
-    if (p.importing && !p.slug) return `<div class="nav-proj" title="${esc(p.importing)}">
+    if (p.importing) return `<${p.job ? `a href="#/import/${esc(p.job)}"` : "div"} class="nav-proj" title="${esc(p.importing)}">
       <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span></span>
-      <span class="np-meta"><span>in preparation</span></span>
-      <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></div>`;
-    const state = p.importing ? `<span class="spin-dot" title="${esc(p.importing)}"></span>`
-      : p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
+      <span class="np-meta"><span class="np-step">${esc(p.importing)}</span></span>
+      <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></${p.job ? "a" : "div"}>`;
+    const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
     if (p.missing) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.missing)}">
       <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
@@ -63,7 +62,7 @@ function renderNav() {
       <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
     return `<a class="nav-proj" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.progress_error || p.title)}">
       <span class="np-top"><span class="swatch pc-${colourOf(p.slug)}" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
-      <span class="np-meta"><span>${p.progress_error ? "progress needs attention" : esc(short)}</span><span class="grow"></span><span>${p.importing ? "in preparation" : p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
+      <span class="np-meta"><span>${p.progress_error ? "progress needs attention" : esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
       <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
   }).join("");
   setWidths(box);
