@@ -4,10 +4,12 @@ more games); these tests need no compiler and no game."""
 
 import json
 import sqlite3
+import sys
 import threading
 import time
 
-from decompnet.app.engine import RomNetwork
+from decompnet.app import workers
+from decompnet.app.engine import RomNetwork, gui
 from decompnet.app.engine import core as engine_core
 from decompnet.store import WAL_SIZE_LIMIT_BYTES, Store
 
@@ -162,6 +164,120 @@ def test_the_rom_map_comes_without_the_compiler_map(tmp_path, monkeypatch):
     monkeypatch.undo()
     columns = net.map_columns("game")
     assert [c[0] for c in columns] == [r["vram"] for r in rows] and all(c[1].endswith("-G8") and not c[2] for c in columns)
+
+
+def test_a_big_read_in_one_step_gives_the_rows_a_read_row_by_row_gives(tmp_path):
+    """Store.table packs the rows into one JSON text. What comes back is what Store.all gives, value for value: a time
+    with all its digits (JSON's own text keeps 15), a missing value, text with quotes and line ends, the order."""
+    store = Store(tmp_path / "app.db")
+    values = [("plain", 1, 1794599257.3712342), ('a "quoted" name\n\twith \\ and é世', -(2 ** 62), 0.1 + 0.2),
+              ("", 0, 5e-324), (None, None, None), ("last", 2 ** 53 + 1, -1.5)]
+    with store.tx() as db:
+        db.execute("CREATE TABLE things(name TEXT, n INTEGER, at REAL)")
+        db.executemany("INSERT INTO things VALUES(?,?,?)", values)
+    query = 'SELECT name, n, at, n AS "odd ""name" FROM things WHERE n IS NOT ? OR n IS NULL ORDER BY n DESC, name'
+    rows = store.table(query, 1)
+    assert rows == [dict(r) for r in store.all(query, 1)] and len(rows) == 4
+    assert [r["n"] for r in rows] == [2 ** 53 + 1, 0, -(2 ** 62), None]
+    assert [type(r["at"]) for r in rows] == [float, float, float, type(None)]
+    assert store.table("SELECT name FROM things WHERE n > ?", 2 ** 60) == []
+    with store.tx() as db:  # (inside a write: it sees what the write changed, as the other reads do)
+        db.execute("DELETE FROM things WHERE name='last'")
+        assert [r["name"] for r in store.table("SELECT name FROM things WHERE n > 1")] == []
+    memory = Store(":memory:")  # (a database only its writer's connection sees)
+    with memory.tx() as db:
+        db.execute("INSERT INTO settings(key, value) VALUES('a', '1')")
+    assert memory.table("SELECT key, value FROM settings WHERE key='a'") == [{"key": "a", "value": "1"}]
+
+
+def test_the_map_and_the_days_matches_come_in_one_step_each(tmp_path, monkeypatch):
+    """sqlite3 gives the interpreter's lock away at each row it fetches, and beside a thread that computes the reader
+    waits a turn to get it back each time: a DS game's 9,900 map rows took 21 s beside one such thread (50 ms alone),
+    so the project page didn't load. The map's rows and the overview's matches of the day are fetched in one step each,
+    however many functions the game has, and say what they said."""
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    proj = tiny_game(net, functions=300)
+    now = time.time()
+    agent, _ = net.local_agent("helper")
+    with net.store.tx() as db:
+        for i in range(200):  # matched through the last 20 hours, at times with more digits than JSON's own text keeps
+            db.execute("UPDATE functions SET status='matched', matched_at=?, matched_agent_id=?, best_score=0 "
+                       "WHERE project_id=? AND name=?", (now - i * 360.123456789, agent.id, proj["id"], f"func_{i}"))
+        db.execute("UPDATE functions SET status='asm', meta=? WHERE project_id=? AND name='func_250'",
+                   (json.dumps({"not_c": {"helper": 'a "hand-written" loop'}}), proj["id"]))
+    fetched = []
+    real_read = Store._read
+
+    def counted(self, sql, args, single):
+        rows = real_read(self, sql, args, single)
+        fetched.append(1 if single else len(rows))
+        return rows
+    monkeypatch.setattr(Store, "_read", counted)
+    rows = net.function_map("game")
+    assert sum(fetched) < 20, f"rows fetched for the map of 300 functions: {fetched}"
+    fetched.clear()
+    stats = net.stats("game")
+    assert sum(fetched) < 20, f"rows fetched for the numbers of a game with 200 matches today: {fetched}"
+    monkeypatch.undo()
+    assert [r["name"] for r in rows] == [f"func_{i}" for i in range(300)]  # (in the order of their addresses)
+    assert [r["status"] for r in rows] == ["matched"] * 200 + ["open"] * 50 + ["asm"] + ["open"] * 49
+    assert [r["matched_at"] for r in rows[:200]] == [now - i * 360.123456789 for i in range(200)]
+    assert rows[0]["matched_by"] == "helper" and rows[250]["not_c"] and not rows[251]["not_c"]
+    assert sum(stats["matches_per_hour"]) == 200 and stats["matches_per_hour"][23] == 10  # (one each 6 minutes)
+    assert stats["agents"] == [{"agent": "helper", "compiles": 0, "matched": 200, "last": None}]
+
+
+def test_the_rom_maps_colours_ask_for_a_compilers_name_once(tmp_path, monkeypatch):
+    """A PS2 game with 8,600 functions: each request for the colours took 47-67 s, because it asked for the compiler's
+    name once per function, and asking goes through every console's compilers and the toolchains (5 ms). Every match
+    and every opening of the project page made such a request, and the other pages waited behind them."""
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    tiny_game(net, functions=40)
+    before = net.map_columns("game")
+    asked = []
+    real_name = gui.consoles.compiler_name
+    monkeypatch.setattr(gui.consoles, "compiler_name", lambda tc: asked.append(tc) or real_name(tc))
+    assert net.map_columns("game") == before and len(before) == 40
+    assert asked == [GCC["toolchain"]]  # (40 times before)
+
+
+def test_a_request_beside_a_computing_thread_gets_the_interpreter_back_in_short_turns():
+    """A DS project's live poll looks at 300 files and makes 37 database statements. Each gives the interpreter's lock
+    away, and with Python's own 5 ms turns it waited that long to get it back while another thread computed: 4.1 s
+    for a poll that takes 40 ms alone, so the project page didn't load. Here a read is a pause that gives the lock
+    away; with the app's turns 60 of them beside a computing thread are several times quicker (6 to 7 times on a
+    quiet computer). Python's turns and the app's are measured one after the other, and a computer too busy to
+    show it gets more tries."""
+    stop, turns = threading.Event(), [0]
+
+    def compute():
+        while not stop.is_set():
+            turns[0] += 1
+
+    def reads() -> float:
+        started = time.perf_counter()
+        for _ in range(60):
+            time.sleep(0.0001)
+        return time.perf_counter() - started
+    pythons_own = sys.getswitchinterval()
+    computing = threading.Thread(target=compute, daemon=True)
+    computing.start()
+    seen = []
+    try:
+        while turns[0] < 100_000:  # (it computes before anything is measured)
+            time.sleep(0.001)
+        for _ in range(5):
+            sys.setswitchinterval(pythons_own)
+            slow = max(reads(), reads())
+            workers.take_short_turns()
+            seen.append(slow / min(reads(), reads()))
+            if seen[-1] >= 3:
+                break
+    finally:
+        sys.setswitchinterval(pythons_own)
+        stop.set()
+        computing.join(5)
+    assert seen[-1] >= 3, f"60 reads beside a computing thread, Python's turns over the app's: {seen}"
 
 
 def test_what_briefs_read_from_the_whole_game_is_built_once_per_layout(tmp_path, monkeypatch):

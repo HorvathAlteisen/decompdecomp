@@ -21,6 +21,13 @@ MAX_WORKERS = 4
 WORKERS = max(1, min(MAX_WORKERS, (os.cpu_count() or 1) - RESERVED_CORES))
 NICE = 10  # how much lower the workers' CPU priority is
 
+# How long a thread keeps the interpreter's one lock while another waits for it (Python's own: 5 ms). A request of
+# the window gives the lock away at each file it looks at and each database statement, and waited that long to get
+# it back, each time, while any thread of the app computed in Python: a DS project's live poll (40 ms alone) took
+# 4.1 s beside one such thread and 43 s beside four, so the project page didn't load. At 0.5 ms: 0.5 s and 4.5 s.
+# Threads that compute take as long as before when there are one or two, and 5% longer when there are four or eight.
+INTERPRETER_TURN_SECONDS = 0.0005
+
 _pool: ThreadPoolExecutor | None = None
 _lock = threading.Lock()
 
@@ -44,6 +51,13 @@ def _lower_priority() -> None:
         system.pthread_set_qos_class_self_np(0x11, 0)  # QOS_CLASS_UTILITY
     else:
         os.nice(NICE)
+
+
+def take_short_turns() -> None:
+    """The app's threads take the interpreter in short turns (INTERPRETER_TURN_SECONDS), for the whole process: the
+    window's requests and the agents' tool calls don't wait behind the threads that compute. Called as the app
+    starts (cli.run)."""
+    sys.setswitchinterval(INTERPRETER_TURN_SECONDS)
 
 
 def pool() -> ThreadPoolExecutor:

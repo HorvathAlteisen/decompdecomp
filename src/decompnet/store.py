@@ -4,6 +4,7 @@ agents on two games made every GUI request wait behind the others (the GUI's pol
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -357,3 +358,30 @@ class Store:
 
     def all(self, sql: str, *args) -> list[sqlite3.Row]:
         return self._read(sql, args, single=False)
+
+    def table(self, sql: str, *args) -> list[dict]:
+        """Every row of a read that gives many, fetched in one step: SQLite packs them into one JSON text.
+
+        sqlite3 gives the interpreter's lock away at each row it fetches. While another thread of the app computes,
+        the thread that reads waits a turn to get it back, each time (workers.INTERPRETER_TURN_SECONDS): a DS
+        game's 9,900 map rows took 21 s beside one such thread where they take 50 ms alone, so the project page
+        didn't load. In one step they take 70 ms there. Rows come in the query's order, as dicts. Not for a column
+        of bytes, which JSON can't hold."""
+        names = [d[0] for d in self._described(sql, args)]
+        # a real number is written with all its digits (JSON's own text keeps 15, and a time has more)
+        cells = ", ".join(f"""CASE typeof("{n}") WHEN 'real' THEN json(printf('%!.17g', "{n}")) ELSE "{n}" END"""
+                          for n in (name.replace('"', '""') for name in names))
+        packed = self.one(f"SELECT json_group_array(json_array({cells})) FROM ({sql})", *args)[0]
+        return [dict(zip(names, row)) for row in json.loads(packed)]
+
+    def _described(self, sql: str, args: tuple) -> tuple:
+        """A query's columns, without a row of it read."""
+        conn = self._reader()
+        if conn is None:
+            with self.lock:
+                return self.conn.execute(f"SELECT * FROM ({sql}) LIMIT 0", args).description
+        cur = conn.execute(f"SELECT * FROM ({sql}) LIMIT 0", args)
+        try:
+            return cur.description
+        finally:
+            cur.close()
