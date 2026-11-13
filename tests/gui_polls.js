@@ -475,7 +475,12 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       const done = { nav: nav.innerHTML, cards: [...cards] };
       calls.length = 0;
       await runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
-      return { started, running, registered, same, done, calls: calls.slice(0, 3) };
+      // the X of the row of an import: for a job that runs, and for an upload of this page; not while the job is
+      // cancelled, and not for the upload of a different page
+      uploads.set("sent.z64", {});
+      const xs = [{ title: "a <b>", job: "j1" }, { title: "sent.z64" }, { title: "a", job: "j1", cancelling: true }, { title: "other.z64" }].map(cancelImportHtml);
+      uploads.clear();
+      return { started, running, registered, same, done, calls: calls.slice(0, 3), xs };
     } finally {
       S.projects = was.projects; api = was.api; document.getElementById = original;
     }

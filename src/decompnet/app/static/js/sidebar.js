@@ -58,6 +58,25 @@ function colourOf(slug) {
    the progress of the import on the home page (showImport), when the job of the import runs (`job`). Until then
    (the game is copied into decompdecomp) the row is not a link: its step says so, and the pointer shows that the row
    opens nothing (app.css, `div.nav-proj`). */
+function cancelImportHtml(p) {
+  if (p.cancelling || !(p.job || uploads.has(p.title))) return "";
+  return `<button class="np-x" type="button" data-cancel="${esc(p.job || "")}" data-title="${esc(p.title)}" title="Cancel this import" aria-label="Cancel the import of ${esc(p.title)}">×</button>`;
+}
+/* The X of the row of an import: the import stops, and what it made goes (the server: `listed` in routes/state.py).
+   An import whose job did not start is the upload of this page (`uploads`, home.js): the upload stops. A job stops
+   at its next step: until then its row says "cancelling" and has no X. */
+$("navProjects").addEventListener("click", async (e) => {
+  const x = e.target.closest(".np-x");
+  if (!x) return;
+  e.preventDefault();  // (the X is in the link of the row)
+  e.stopPropagation();
+  if (!confirm(`Cancel the import of ${x.dataset.title}?\n\nWhat the import made is deleted. Your copy of the game stays.`)) return;
+  try {
+    if (x.dataset.cancel) await api("/api/job/cancel", { method: "POST", body: { id: x.dataset.cancel } });
+    else cancelUpload(x.dataset.title);
+  } catch (err) { toast(esc(err.message), "err"); }
+  loadNav();
+});
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
@@ -65,7 +84,7 @@ function renderNav() {
     const pct = codePct(p);
     const short = p.platform_short || p.platform_name || "?";
     if (p.importing) return `<${p.job ? `a href="#/import/${esc(p.job)}" data-job="${esc(p.job)}"` : "div"} class="nav-proj" title="${esc(p.importing)}">
-      <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span></span>
+      <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span>${cancelImportHtml(p)}</span>
       <span class="np-meta"><span class="np-step">${esc(p.importing)}</span></span>
       <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></${p.job ? "a" : "div"}>`;
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`

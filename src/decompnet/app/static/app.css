@@ -134,6 +134,8 @@ div.nav-proj { cursor: not-allowed; }  /* an import whose job did not start: the
 .nav-proj.on { background: var(--panel); border-color: var(--line); }
 .np-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .np-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; margin: -2px -3px -2px 0; border-radius: var(--r-sm); font: 500 15px/1 var(--sans); color: var(--muted); cursor: pointer; }  /* cancels the import of its row */
+.np-x:hover { background: var(--line); color: var(--ink); }
 .np-room { font-size: 7px; letter-spacing: -1px; color: var(--move); }
 .np-meta { display: flex; min-width: 0; font: 500 11px/1 var(--mono); color: var(--muted); gap: 6px; }  /* min-width: a long step of an import made each row wider than the list */
 .np-bar { height: 3px; border-radius: var(--r); background: var(--open); overflow: hidden; }

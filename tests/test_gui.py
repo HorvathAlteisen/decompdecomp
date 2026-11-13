@@ -126,6 +126,18 @@ def test_a_game_being_imported_shows_at_once_with_a_spinner(gui):
     assert importing["calls"] == ["/api/import", "/api/projects", "/api/job"]
 
 
+def test_the_row_of_an_import_has_an_x_that_cancels_it(gui):
+    """The row of an import has an X when the import can be cancelled: its job runs (the X has the job), or this page
+    sends its game (the X has no job: the upload stops). The row of a job that was cancelled says "cancelling" and
+    has no X. `running` is the row as the list draws it."""
+    importing = gui["checks"]["importing"]
+    job, upload, cancelling, other = importing["xs"]
+    assert 'class="np-x"' in job and 'data-cancel="j1"' in job and 'data-title="a &lt;b&gt;"' in job
+    assert 'class="np-x"' in upload and 'data-cancel=""' in upload and 'data-title="sent.z64"' in upload
+    assert cancelling == "" and other == ""
+    assert 'data-cancel="j1"' in importing["running"]["nav"] and "np-x" not in importing["started"]["nav"]
+
+
 def test_the_bar_of_an_import_row_does_not_start_again_and_a_row_that_opens_nothing_says_so(gui):
     """Each time the list of projects was drawn again (each 5 s, and at each click on a row), the progress bars of all
     imports started again from the left. A bar that is drawn again continues at the time of the clock. The row of an

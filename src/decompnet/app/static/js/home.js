@@ -9,6 +9,15 @@ let picked = null;
    and its end there directly: with two imports, the drop zone changed between the two. */
 let shownImport = null;
 const imports = new Map();
+/* The imports whose game this page sends to the app at this time, by the name of the file (the title of their row
+   until their job starts). The X of such a row stops the upload (cancelUpload): no job is there to cancel. */
+const uploads = new Map();
+function cancelUpload(title) {
+  const imp = uploads.get(title);
+  if (!imp) return;
+  imp.cancelled = true;
+  imp.abort();
+}
 
 /* Once, after this version's first start: the old `decomp mcp` entries it took out of the agents' settings
    (app/cleanup.py), each a sentence from the app, until the user dismisses them. Those entries started decompdecomp
@@ -553,6 +562,12 @@ function paintImportTime(imp) {
 /* An import failed: the drop zone shows why, and it shows no import. The address of an import goes with it, or the
    row of that import stayed the selected one and did not open it again. */
 function importEnded(imp, e) {
+  if (imp.cancelled || e.job?.state === "cancelled") {  // the user cancelled it: not a failure, and no report
+    if (shownImport === imp) { shownImport = null; if (location.hash.startsWith("#/import/")) history.replaceState(null, "", "#/"); resetDrop(); }
+    loadNav();
+    toast(`The import of ${esc(imp.title)} was cancelled.`);
+    return;
+  }
   shownImport = null;
   if (location.hash.startsWith("#/import/")) { history.replaceState(null, "", "#/"); markNav(); }
   loadNav();
@@ -597,8 +612,12 @@ async function runImport(query, file, title, name = "") {
   try {
     let started;
     if (upload) {
-      started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(name || file.name || "game.bin")}`, file,
-        (p) => { if (!listed) { listed = true; loadNav(); } imp.up = p; paintImport(imp); });
+      const sent = name || file.name || "game.bin";
+      uploads.set(sent, imp);
+      try {
+        started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(sent)}`, file,
+          (p) => { if (!listed) { listed = true; loadNav(); } imp.up = p; paintImport(imp); }, imp);
+      } finally { uploads.delete(sent); }
     } else {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }

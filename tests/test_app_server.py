@@ -324,6 +324,98 @@ def test_an_import_that_does_not_end_does_not_mark_the_project_of_a_different_im
                               {"slug": "quick-game-g", "title": "quick-game"}] + before
 
 
+def _cancel(client, job: str) -> None:
+    assert client.post("/api/job/cancel", json={"id": job}, headers={"X-Decomp": "1"}).json() == {"cancelled": True}
+
+
+def test_a_cancelled_import_leaves_no_project_and_no_folder(app, slow_imports, tmp_path):
+    """The row of an import has an X that cancels the import. A job stops at its next step, not at once: until then
+    the row says so, with the mark `cancelling` (the page shows no X then). The import that was cancelled leaves
+    nothing: the project that it made goes from the app, with its folder. The user's copy of the game stays."""
+    client, net, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    job = start("dropped-game")
+    console.made["dropped-game"].set()
+    _until(lambda: _shown(client)[0].get("importing") == "measuring the project")
+    assert (net.workspace / "dropped-game-g").is_dir()
+    _cancel(client, job)
+    row = client.get("/api/projects").json()[0]
+    assert row["importing"] == "cancelling: the step that runs ends first" and row["cancelling"] is True
+    console.measured["dropped-game"].set()  # the step that ran ends
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    ended = client.get("/api/job", params={"id": job}).json()
+    assert ended["state"] == "cancelled" and ended["error"] == "The import was cancelled."
+    assert _shown(client) == before and not (net.workspace / "dropped-game-g").exists()
+    assert (tmp_path / "dropped-game.bin").is_file()
+
+
+def test_an_import_cancelled_before_its_project_is_made_leaves_nothing(app, slow_imports):
+    client, net, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    job = start("early-game")
+    _cancel(client, job)
+    console.made["early-game"].set()
+    console.measured["early-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == before and not (net.workspace / "early-game-g").exists()
+
+
+def test_a_cancelled_import_does_not_remove_a_game_that_was_a_project_before(app, slow_imports, tmp_path):
+    """The import of a game that is a project only finds that project. A cancel of that import removes nothing."""
+    client, net, _ = app
+    start, console = slow_imports
+    first = start("kept-game")
+    console.made["kept-game"].set()
+    console.measured["kept-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": first}).json()["state"] != "running")
+    held, go_on = threading.Event(), threading.Event()
+    real = console.game_info
+
+    def game_info(game):
+        held.set()
+        assert go_on.wait(10)
+        return real(game)
+    console.game_info = game_info
+    again = client.post("/api/import", params={"confirmed": "1", "path": str(tmp_path / "kept-game.bin")},
+                        headers={"X-Decomp": "1"}).json()["job"]
+    assert held.wait(10)
+    _cancel(client, again)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": again}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": again}).json()["state"] == "cancelled"
+    assert "kept-game-g" in [p.get("slug") for p in _shown(client)] and (net.workspace / "kept-game-g").is_dir()
+
+
+def test_a_cancelled_rom_import_leaves_no_folder(tmp_path, monkeypatch):
+    """A ROM-mode import makes the folder of the game before the game is a project. A cancel during the split left
+    that folder. After the project is in the database, a cancel removes the project and the folder."""
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    mcp, _, security, _ = build(net, tmp_path, PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
+    n64 = consoles.get("n64")
+    splitting, go_on = threading.Event(), threading.Event()
+    real_split = n64.split_game
+
+    def split_game(workdir, picked, log=print, **more):
+        splitting.set()
+        assert go_on.wait(10)
+        log("the split goes on")  # a job that was cancelled stops at its next step
+        return real_split(workdir, picked, log=log, **more)
+    monkeypatch.setattr(n64, "split_game", split_game)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+    job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
+    assert splitting.wait(60) and (tmp_path / "demo-quest-64").is_dir()
+    _cancel(client, job)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == [] and not (tmp_path / "demo-quest-64").exists()
+
+
 @pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None, reason="needs gcc-2.7.2-kmc")
 def test_a_rom_game_is_one_entry_in_the_list_while_its_import_completes(tmp_path, monkeypatch):
     """A ROM-mode import puts the project in the database and then continues (the work of the console after the

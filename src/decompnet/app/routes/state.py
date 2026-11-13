@@ -64,6 +64,23 @@ def register(app: App) -> None:
                 pass
 
     COPYING = "copying the game into decompdecomp"  # the step of an import while its upload runs
+    # the step of an import that the user cancelled, until the tool that runs ends (the X of its row, sidebar.js)
+    CANCELLING = "cancelling: the step that runs ends first"
+    def remove_project(slug: str, files: bool = False) -> None:
+        """A project goes from the app: its helpers stop, and its records and what the agents learned go with it.
+        `files`: its folder too. The home page's Remove, and an import that the user cancelled."""
+        manager.forget_project(slug)  # (it stopped every project's helpers)
+        proj = net.project_row(slug)
+        net.knowledge.forget(slug)
+        net.remove_project(slug)
+        if files:
+            shutil.rmtree(proj["root"], ignore_errors=True)
+        if settings.data.get("last_project") == slug:
+            settings.data["last_project"] = None
+            settings.save()
+
+    app.remove_project = remove_project
+
     importing: list[dict] = []  # the imports that run, oldest first: {"title", "job", "slug"} (api_import)
 
     def preparing() -> tuple[list[dict], dict[str, dict]]:
@@ -82,6 +99,8 @@ def register(app: App) -> None:
             # the step was "starting" for the whole upload of a disc, with a row that did not open
             first = "starting" if "job" in entry else COPYING
             shown = {"importing": said[-1] if said else first} | ({"job": entry["job"]} if "job" in entry else {})
+            if jobs.cancelling(entry.get("job")):
+                shown |= {"importing": CANCELLING, "cancelling": True}
             if entry.get("slug"):
                 marks[entry["slug"]] = shown
             else:
@@ -216,14 +235,18 @@ def register(app: App) -> None:
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
                 size = 0
-                with open(game, "wb") as f:
-                    async for chunk in request.stream():
-                        size += len(chunk)
-                        if size > MAX_DISC:
-                            f.close()
-                            game.unlink(missing_ok=True)
-                            return fail(ValueError("that file is larger than any game disc"))
-                        f.write(chunk)
+                try:
+                    with open(game, "wb") as f:
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > MAX_DISC:
+                                f.close()
+                                game.unlink(missing_ok=True)
+                                return fail(ValueError("that file is larger than any game disc"))
+                            f.write(chunk)
+                except BaseException:  # the upload stopped (the user cancelled it): the part that came is not kept
+                    shutil.rmtree(upload_dir, ignore_errors=True)
+                    raise
                 if size == 0:
                     game.unlink(missing_ok=True)
                     return fail(ValueError("the file was empty"))
@@ -249,13 +272,23 @@ def register(app: App) -> None:
             return {"slug": slug}
 
         def listed(log):
+            """The import, in the list until it ends. An import that the user cancelled leaves nothing: the engine
+            removes the folder of a game that has no project (`_import_split`, `create_scratch`), and the project
+            that the import made (`log.project`) goes here, with its folder. A game that was a project before
+            (the import only found it) is not the project of this import, and stays."""
             log.project = lambda slug: entry.update(slug=slug)
             try:
-                return work(log)
+                done = work(log)
+                log.check_cancel()  # cancelled during the last step: the job says "cancelled", so the project goes
+                return done
+            except BaseException:
+                if log.cancelled() and entry.get("slug"):
+                    app.remove_project(entry["slug"], files=True)
+                raise
             finally:
                 importing.remove(entry)
         entry["title"] = name
-        entry["job"] = jobs.start("import", listed)
+        entry["job"] = jobs.start("import", listed, cancelled="The import was cancelled.")
         return JSONResponse({"job": entry["job"]})
 
     @mcp.custom_route("/api/import", methods=["POST"])
