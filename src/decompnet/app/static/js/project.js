@@ -781,9 +781,12 @@ function openForkDialog(p) {
   };
 }
 
-function uploadFile(url, file, onProgress) {
+/* `hold`: gets `abort`, which stops the upload (the X of an import whose game is copied, home.js). */
+function uploadFile(url, file, onProgress, hold) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
+    if (hold) hold.abort = () => x.abort();
+    x.onabort = () => reject(new Error("The upload was cancelled."));
     x.open("POST", url);
     x.setRequestHeader("X-Decomp", "1");
     x.setRequestHeader("Content-Type", "application/octet-stream");

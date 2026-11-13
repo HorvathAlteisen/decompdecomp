@@ -110,6 +110,23 @@ class ImportMixin:
 
     def _import_split(self, console: consoles.Console, picked: Picked, *, toolchain: str | None = None,
                       flags: list[str] | None = None, log=print, reimport=None, workdir: Path | None = None) -> str:
+        """`_split_into`, and an import that the user cancelled leaves no folder: the folder that the import made
+        goes when the game did not become a project. (The project of a cancelled import goes in routes/state.py,
+        with its folder. A reimport works in a folder of its own, which `_reimport_split` removes.) An import that
+        failed keeps its folder as before: it has what the tools wrote, for a report."""
+        made: list[Path] = []
+        try:
+            return self._split_into(console, picked, toolchain=toolchain, flags=flags, log=log, reimport=reimport,
+                                    workdir=workdir, made=made)
+        except BaseException:
+            if getattr(log, "cancelled", lambda: False)():
+                for folder in made:
+                    if not self.store.one("SELECT 1 FROM projects WHERE slug=?", folder.name):
+                        shutil.rmtree(folder, ignore_errors=True)
+            raise
+
+    def _split_into(self, console: consoles.Console, picked: Picked, *, toolchain: str | None, flags: list[str] | None,
+                    log, reimport, workdir: Path | None, made: list[Path]) -> str:
         rom, info = picked.data, picked.info
         check_cancel = getattr(log, "check_cancel", lambda: None)
         check_cancel()
@@ -124,6 +141,7 @@ class ImportMixin:
                 slug, n = f"{base}-{n}", n + 1
             workdir = self.workspace / slug
             workdir.mkdir(parents=True)
+            made.append(workdir)
         else:
             slug = reimport["slug"]
             if workdir is None:
@@ -342,6 +360,7 @@ class ImportMixin:
             self.surveys.pop(slug, None)
             self.twins.stop(slug)
             self.permuter.stop(slug)
+        getattr(log, "project", lambda slug: None)(slug)  # the job of the import marks this project until it completes
         console.after_import(self, slug, chosen=chosen, log=log)
         if reimport is not None and backup is not None:
             try:

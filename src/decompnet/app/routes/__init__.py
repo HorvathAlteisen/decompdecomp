@@ -50,4 +50,5 @@ class App:
     quit_app: Callable[[], None] | None = None  # quit: the window, every helper, the server
     # what one part of the app lends another (set by the module that defines it)
     autopilot: Callable[[str], None] | None = None  # state: start autopilot on a project
+    remove_project: Callable[..., None] | None = None  # state: a project goes from the app (files=True: its folder too)
     with_project: Callable[..., Any] | None = None  # projects: a project route from fn(slug, request, data)

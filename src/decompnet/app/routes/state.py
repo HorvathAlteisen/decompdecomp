@@ -63,10 +63,56 @@ def register(app: App) -> None:
             except NetworkError:
                 pass
 
+    COPYING = "copying the game into decompdecomp"  # the step of an import while its upload runs
+    # the step of an import that the user cancelled, until the tool that runs ends (the X of its row, sidebar.js)
+    CANCELLING = "cancelling: the step that runs ends first"
+    def remove_project(slug: str, files: bool = False) -> None:
+        """A project goes from the app: its helpers stop, and its records and what the agents learned go with it.
+        `files`: its folder too. The home page's Remove, and an import that the user cancelled."""
+        manager.forget_project(slug)  # (it stopped every project's helpers)
+        proj = net.project_row(slug)
+        net.knowledge.forget(slug)
+        net.remove_project(slug)
+        if files:
+            shutil.rmtree(proj["root"], ignore_errors=True)
+        if settings.data.get("last_project") == slug:
+            settings.data["last_project"] = None
+            settings.save()
+
+    app.remove_project = remove_project
+
+    importing: list[dict] = []  # the imports that run, oldest first: {"title", "job", "slug"} (api_import)
+
+    def preparing() -> tuple[list[dict], dict[str, dict]]:
+        """The imports that run, for the list of projects. Before, the list showed nothing of an import until the
+        import completed (minutes for a big game). Gives a line for each game that has no project (newest first),
+        and a mark for each project that is in the database before its import completes (a ROM-mode game, during
+        the work of the console after the import; a PROJECT-mode game, before its first measurement). The line and
+        the mark contain the step of the import and, when the job runs, the job: the page opens the progress of the
+        import with it (#/import/<job>). The engine tells the import which project it made (`log.project`:
+        `_import_split` in engine/importing.py, `create_scratch` in forkengine.py). An import marks only that
+        project: an import that did not end marked the project of a different import that started after it."""
+        lines, marks = [], {}
+        for entry in [e for e in list(importing) if e["title"]]:
+            said = [line.strip() for line in list(jobs.jobs.get(entry.get("job"), {}).get("log", [])) if line.strip()]
+            # no job: the upload of the game runs (only an upload has its name before its job, start_import). Before,
+            # the step was "starting" for the whole upload of a disc, with a row that did not open
+            first = "starting" if "job" in entry else COPYING
+            shown = {"importing": said[-1] if said else first} | \
+                ({"job": entry["job"]} if "job" in entry else {"upload": entry["upload"]} if entry.get("upload") else {})
+            if jobs.cancelling(entry.get("job")):
+                shown |= {"importing": CANCELLING, "cancelling": True}
+            if entry.get("slug"):
+                marks[entry["slug"]] = shown
+            else:
+                lines.insert(0, {"title": entry["title"]} | shown)
+        return lines, marks
+
     def project_list() -> list[dict]:
         """The sidebar and the home page: every project with its progress and how many helper agents work on it
-        right now. One that can't be read is still listed, with the reason: before, one odd project emptied the
-        whole sidebar, or quietly went missing from it."""
+        right now, after the games that are imported at this time (`preparing`). One that can't be read is still
+        listed, with the reason: before, one odd project emptied the whole sidebar, or quietly went missing from it."""
+        lines, marks = preparing()
         running: dict[str, int] = {}
         for s in manager.sessions.values():
             if s.state in ("starting", "working", "waiting"):
@@ -85,7 +131,7 @@ def register(app: App) -> None:
                 else:
                     out.append({"slug": p["slug"], "title": p["name"] or p["slug"], "working": 0,
                                 "broken": job_error(e, jobs.log_path)})
-        return out
+        return lines + [p | marks.get(p["slug"], {}) for p in out]
 
     @mcp.custom_route("/api/projects", methods=["GET"])
     async def api_projects(request: Request) -> Response:
@@ -152,9 +198,10 @@ def register(app: App) -> None:
                 (game.parent / name).write_bytes(f.read(n))
             f.truncate(size - sum(n for _, n in wanted))
 
-    @mcp.custom_route("/api/import", methods=["POST"])
-    async def api_import(request: Request) -> Response:
-        """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path."""
+    async def start_import(request: Request, entry: dict) -> Response:
+        """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path.
+        `entry`: its line in `importing`. The line gets the name of the game when the name is known, the job when
+        the job starts, and the project when the project is in the database."""
         if (bad := guard(request, write=True)):
             return bad
         q = request.query_params
@@ -184,19 +231,26 @@ def register(app: App) -> None:
                     return fail(ValueError(f"no file or folder at {game}"))
                 name = game.name
             else:
-                name = Path(q.get("name") or "game.bin").name
+                name = entry["title"] = Path(q.get("name") or "game.bin").name
+                # the name the page gave to this upload: its row has it, and the X of the row cancels with it
+                # (api_cancel_import). The name of the file is not enough: two uploads can have the same one
+                entry["upload"] = q.get("upload") or ""
                 upload_dir = home / "uploads" / uuid.uuid4().hex[:8]  # keeps the file's own name
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
                 size = 0
-                with open(game, "wb") as f:
-                    async for chunk in request.stream():
-                        size += len(chunk)
-                        if size > MAX_DISC:
-                            f.close()
-                            game.unlink(missing_ok=True)
-                            return fail(ValueError("that file is larger than any game disc"))
-                        f.write(chunk)
+                try:
+                    with open(game, "wb") as f:
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > MAX_DISC:
+                                f.close()
+                                game.unlink(missing_ok=True)
+                                return fail(ValueError("that file is larger than any game disc"))
+                            f.write(chunk)
+                except BaseException:  # the upload stopped (the user cancelled it): the part that came is not kept
+                    shutil.rmtree(upload_dir, ignore_errors=True)
+                    raise
                 if size == 0:
                     game.unlink(missing_ok=True)
                     return fail(ValueError("the file was empty"))
@@ -216,11 +270,64 @@ def register(app: App) -> None:
                     shutil.rmtree(game.parent, ignore_errors=True)
             if all_compilers:
                 net.install_compilers(slug, accept, retest=toolchain is None, log=log)
-            settings.data["last_project"] = slug
-            settings.save()
-            autopilot(slug)
             return {"slug": slug}
-        return JSONResponse({"job": jobs.start("import", work)})
+
+        def listed(log):
+            """The import, in the list until it ends. An import that the user cancelled leaves nothing: the engine
+            removes the folder of a game that has no project (`_import_split`, `create_scratch`), and the project
+            that the import made (`log.project`) goes here, with its folder. A game that was a project before
+            (the import only found it) is not the project of this import, and stays."""
+            log.project = lambda slug: entry.update(slug=slug)
+            try:
+                done = work(log)
+                log.commit()  # cancelled during the last step: the job says "cancelled", so the project goes
+                # only now, when no cancel can remove the project: before, a cancel during this removed the
+                # project under the autopilot that had started for it
+                settings.data["last_project"] = done["slug"]
+                settings.save()
+                autopilot(done["slug"])
+                return done
+            except BaseException:
+                if log.cancelled() and entry.get("slug"):
+                    app.remove_project(entry["slug"], files=True)
+                raise
+            finally:
+                importing.remove(entry)
+        entry["title"] = name
+        if entry.get("cancelled"):  # the X of its row, after the last byte of the upload: no job starts
+            if uploaded:
+                shutil.rmtree(game.parent, ignore_errors=True)
+            return fail(ValueError("The import was cancelled."))
+        entry["job"] = jobs.start("import", listed, cancelled="The import was cancelled.")
+        return JSONResponse({"job": entry["job"]})
+
+    @mcp.custom_route("/api/import", methods=["POST"])
+    async def api_import(request: Request) -> Response:
+        """An import. It is in the list of projects from the first byte of its upload until it completes
+        (`preparing`). A request that fails or stops before its job starts leaves no line in the list."""
+        entry = {"title": ""}
+        importing.append(entry)
+        try:
+            return await start_import(request, entry)
+        finally:
+            if "job" not in entry:
+                importing.remove(entry)
+
+    @mcp.custom_route("/api/import/cancel", methods=["POST"])
+    async def api_cancel_import(request: Request) -> Response:
+        """The X of the row of an upload (`upload`: the name the page gave to it). The page stops its request too, but
+        that is not enough: a request that stops after its last byte arrived starts the job all the same, and the
+        page never gets that job. So the upload is marked and starts no job, or the job it started is cancelled.
+        Nothing here waits, so no job starts between the two."""
+        if (bad := guard(request, write=True)):
+            return bad
+        upload = str((await body(request)).get("upload") or "")
+        for entry in [e for e in importing if upload and e.get("upload") == upload]:
+            if "job" in entry:
+                return JSONResponse({"cancelled": jobs.cancel(entry["job"])})
+            entry["cancelled"] = True
+            return JSONResponse({"cancelled": True})
+        return JSONResponse({"cancelled": False})
 
     COLUMN_KEYS = ("vram", "cc", "ccx")
     GZIP_FROM_BYTES = 4096  # smaller answers aren't worth compressing

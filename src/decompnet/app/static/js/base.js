@@ -324,6 +324,7 @@ function route() {
     else if (h === "#/agents") showAgentsPage();
     else if (h === "#/tools") showToolsPage();
     else if (h === "#/settings") showSettingsPage();
+    else if (h.startsWith("#/import/")) showImport(h.slice("#/import/".length));
     else showHome();
   }
   markNav();

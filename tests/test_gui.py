@@ -102,6 +102,124 @@ def test_a_project_whose_folder_is_missing_says_so_and_can_be_removed(gui):
     assert missing["notes"] == ["Project removed from decompdecomp."]
 
 
+def test_a_game_being_imported_shows_at_once_with_a_spinner(gui):
+    """Before, an import showed nothing in the list of projects until it completed. The sidebar and the home page
+    show the game from the start of its import, with a spinner and a progress bar, and with no project to open. When
+    the job of the import runs, the row and the card open the progress of the import. When the project is in the
+    database, they show the project with the spinner and the step of the import. When the import completes, they show the project as all other
+    projects. The cards of the home page are drawn again only when an import starts or ends.
+    The import requests the list immediately after its job starts."""
+    importing = gui["checks"]["importing"]
+    for shown in (importing["started"]["nav"].split("</div>")[0], importing["started"]["cards"][0]):
+        assert "my &lt;game&gt;.z64" in shown and "spin-dot" in shown and 'class="workbar"' in shown
+        assert "href" not in shown
+    assert len(importing["started"]["cards"]) == 2 and "spin-dot" not in importing["started"]["cards"][1]
+    running = importing["running"]
+    assert 'href="#/import/j1"' in running["nav"] and running["cards"][0].startswith("#/import/j1|")
+    registered = importing["registered"]
+    assert "New Game" in registered["nav"] and "spin-dot" in registered["nav"] and "my &lt;game&gt;" not in registered["nav"]
+    assert 'href="#/import/j2"' in registered["nav"] and '<span class="np-step">measuring the project</span>' in registered["nav"]
+    assert registered["cards"][0].startswith("#/import/j2|")
+    assert "New Game" in registered["cards"][0] and "spin-dot" in registered["cards"][0]
+    assert importing["same"] == []
+    assert "spin-dot" not in importing["done"]["nav"] and "spin-dot" not in "".join(importing["done"]["cards"])
+    assert importing["calls"] == ["/api/import", "/api/projects", "/api/job"]
+
+
+def test_the_row_of_an_import_has_an_x_that_cancels_it(gui):
+    """The row of an import has an X when the import can be cancelled: its job runs (the X has the job), or this page
+    sends its game (the X has no job: the upload stops). The row of a job that was cancelled says "cancelling" and
+    has no X. `running` is the row as the list draws it."""
+    importing = gui["checks"]["importing"]
+    job, upload, cancelling, other = importing["xs"]
+    assert 'class="np-x"' in job and 'data-cancel="j1"' in job and 'data-title="a &lt;b&gt;"' in job
+    assert 'class="np-x"' in upload and 'data-cancel=""' in upload and 'data-title="sent.z64"' in upload
+    assert 'data-upload="u1"' in upload  # not the name of the file: two uploads can have the same one
+    assert cancelling == "" and other == ""
+    # the X of an upload: the request of this page stops, and the server is told (a request that stops after its
+    # last byte arrived starts its job all the same)
+    assert importing["cancelled"] == {"stopped": 1, "marked": True,
+                                      "sent": [["/api/import/cancel", {"upload": "u1"}]]}
+    assert 'data-cancel="j1"' in importing["running"]["nav"] and "np-x" not in importing["started"]["nav"]
+
+
+def test_the_bar_of_an_import_row_does_not_start_again_and_a_row_that_opens_nothing_says_so(gui):
+    """Each time the list of projects was drawn again (each 5 s, and at each click on a row), the progress bars of all
+    imports started again from the left. A bar that is drawn again continues at the time of the clock. The row of an
+    import whose job did not start (its game is copied into the app) is not a link: the pointer over it shows that the row
+    opens nothing."""
+    static = Path(__file__).parents[1] / "src" / "decompnet" / "app" / "static"
+    css, sidebar = (static / "app.css").read_text(encoding="utf-8"), (static / "js" / "sidebar.js").read_text(encoding="utf-8")
+    delay = re.fullmatch(r"-(\d+)ms", gui["checks"]["importing"]["started"]["barDelay"])
+    assert delay and int(delay[1]) < 2500
+    # the times in sidebar.js are those of the animations in app.css
+    assert "animation: workbar 1.25s ease-in-out infinite alternate" in css and "WORKBAR_MS = 2500" in sidebar
+    assert "animation: spin .8s linear infinite" in css and "SPIN_MS = 800" in sidebar
+    assert "div.nav-proj { cursor: not-allowed; }" in css
+
+
+def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
+    """The home page hid the progress of an import each time it opened, and nothing brought it back. The row of an
+    import in the sidebar shows the step of the import, and it opens the home page with the progress of that import
+    (its step, its log and its time). This is also true for an import that the page did not start. The drop zone
+    shows one import at a time: a different import that continues does not write its step or its time into it, and a
+    new import takes the drop zone. The page asks for an import one time in each interval, also after its row
+    opened it again. When an import completes, its project opens.
+
+    The row of the import that the drop zone shows is the selected row, as the row of an open project is: it had no
+    frame. A new import takes the address of the import that was shown, and the address of an import that ended
+    becomes the address of the home page: the row of a different import does not stay the selected one."""
+    progress = gui["checks"]["importProgress"]
+    assert 'href="#/import/j"' in progress["row"] and '<span class="np-step">splitting the game</span>' in progress["row"]
+    assert progress["started"]["busy"] and not progress["started"]["idle"]
+    assert progress["started"]["step"] == "splitting the game" and progress["started"]["selected"] == []
+    assert progress["left"]["idle"] and not progress["left"]["busy"]
+    back = progress["back"]
+    assert back["busy"] and not back["idle"] and "my-game.z64" in back["title"]
+    assert back["step"] == "disassembling every function"
+    assert back["log"] == "splitting the game\ndisassembling every function"
+    assert back["time"] == " · 1:00" and progress["askedAgain"] == 1 and back["selected"] == ["j"]
+    other = progress["other"]
+    assert other["busy"] and "other-game.iso" in other["title"]
+    assert other["step"] == "reading the disc" and other["log"] == "reading the disc" and other["time"] == ""
+    assert other["selected"] == ["k"]
+    assert progress["still"] == other
+    fresh = progress["fresh"]
+    assert fresh["busy"] and fresh["title"] == "Opening Demo Quest 64…" and fresh["step"] == "finding the code segments"
+    assert fresh["selected"] == [] and progress["freshAddress"] == "#/"
+    # the page opens at the address of an import (a reload): before, the list of projects was not there yet, and the
+    # page went to the home page without the import
+    reopened = progress["reopened"]
+    assert reopened["busy"] and reopened["title"] == "Analysing other-game.iso…" and reopened["selected"] == ["k"]
+    assert progress["gone"] == {"address": "#/", "selected": []}
+    assert progress["opened"] == "#/p/other-game"
+
+
+def test_two_imports_at_the_same_time_do_not_write_into_the_progress_of_each_other(gui):
+    """With two imports, the drop zone changed between the two: the upload of each game wrote its name and its bar
+    into the drop zone, the import whose upload ended first took the drop zone, and the row of an import showed an old
+    step and an empty log until the server answered again (seconds, while two imports run). The drop zone shows one
+    import, and only that import writes into it. The row of an import shows the step and the log that the page has
+    of that import immediately. An import that fails shows why, and the row of the other import shows that import
+    again."""
+    apart = gui["checks"]["importsApart"]
+    for shown in (apart["twoUploads"], apart["firstRuns"]):
+        assert shown["busy"] and shown["upload"] and not shown["work"] and shown["bar"] == "25.0%"
+        assert shown["title"] == "Copying Game B… into decompdecomp… 25%" and shown["log"] == ""
+    both = apart["bothRun"]
+    assert both["title"] == "Analysing Game B…" and both["step"] == "unpacking the cartridge"
+    assert both["work"] and not both["upload"]
+    assert apart["stays"]["step"] == "finding the functions"
+    assert apart["rowA"]["title"] == "Analysing a.bin…" and apart["rowA"]["step"] == "splitting the game"
+    assert apart["rowA"]["log"] == "reading the disc\nsplitting the game" and apart["rowA"]["work"]
+    assert apart["rowB"]["title"] == "Analysing b.nds…" and apart["rowB"]["step"] == "finding the functions"
+    assert apart["rowB"]["log"] == "unpacking the cartridge\nfinding the functions"
+    failed = apart["failed"]
+    assert failed["error"] and not failed["busy"] and failed["name"] == "b.nds" and failed["address"] == "#/"
+    again = apart["again"]
+    assert again["busy"] and not again["error"] and again["step"] == "splitting the game"
+
+
 def test_a_ds_rom_is_told_by_its_header_as_the_server_tells_it(gui):
     nds = gui["checks"]["nds"]
     assert nds["good"] == ["nds", "ADQE", "DEMOQUESTDS"]

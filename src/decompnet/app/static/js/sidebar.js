@@ -3,19 +3,37 @@
 /* The page's CSP allows no inline style attributes: widths are set through the DOM instead. */
 function setWidths(root) { root.querySelectorAll("[data-w]").forEach((el) => { el.style.width = el.dataset.w + "%"; }); }
 
+/* The spinners and the progress bars of rows that were drawn again continue their animation at the point where the
+   clock says it is, not at its start. Before, each time the list was drawn again (each 5 s, and at each click on a
+   row) the bars of all imports started again from the left. Only for elements that are new: a change of the delay
+   moves an animation that runs. The times are those of `.spin-dot` and `.workbar i` in app.css (the bar goes there
+   and back, 2 x 1.25 s). */
+const SPIN_MS = 800, WORKBAR_MS = 2500;
+function keepTime(root) {
+  const now = Date.now();
+  root.querySelectorAll(".spin-dot").forEach((el) => { el.style.animationDelay = `-${now % SPIN_MS}ms`; });
+  root.querySelectorAll(".workbar i").forEach((el) => { el.style.animationDelay = `-${now % WORKBAR_MS}ms`; });
+}
+
 function markNav() {
   const h = location.hash || "#/";
   const route = h.startsWith("#/p/") ? "project" : (h.replace("#/", "") || "home");
   document.querySelectorAll(".nav [data-route]").forEach((a) => a.classList.toggle("on", a.dataset.route === route));
-  document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", a.dataset.slug === S.slug && route === "project"));
+  // the row of an import is the selected one while the home page shows the progress of that import (showImport)
+  const job = h.startsWith("#/import/") ? h.slice("#/import/".length) : "";
+  document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", job ? a.dataset.job === job : a.dataset.slug === S.slug && route === "project"));
 }
 /* One ask at a time: when the list took longer than 5 s (11 s with two projects whose game file was gone), the
    timer's asks piled up and kept the app's workers busy. One asked for meanwhile (a project renamed) goes after it. */
 let navLoading = false, navAgain = false;
+/* The games that are imported at this time, as the list has them. When they change, the cards of the home page are
+   drawn again (the home page draws its cards only when it opens). */
+const importingNow = () => JSON.stringify(S.projects.filter((p) => p.importing).map((p) => [p.slug, p.title, p.job]));
 async function loadNav(timer = false) {
   if (document.hidden && S.projects.length) return;  // the window is minimised: nobody sees the list
   if (navLoading) { navAgain = navAgain || !timer; return; }
   navLoading = true;
+  const importing = importingNow();
   try { S.projects = await api("/api/projects"); } catch (e) {
     if (!S.projects?.length) $("navProjects").innerHTML = `<p class="nav-empty">Couldn't load your projects: ${esc(e.message)}</p>`;
     return;
@@ -24,6 +42,7 @@ async function loadNav(timer = false) {
     if (navAgain) { navAgain = false; loadNav(); }
   }
   renderNav();
+  if (importingNow() !== importing) renderCards();
 }
 /* Each project's colour, the same in the sidebar and in every notification, so a glance says which game it was. In
    the order the projects were made (app.css orders the colours so that neighbours differ most): a new project never
@@ -34,12 +53,40 @@ function colourOf(slug) {
   return i < S.projects.length ? i % PROJECT_COLOURS : 0;
 }
 
+/* A game that is imported (`importing`: the step of its import, routes/state.py) is in the list from the start of
+   the import, with a spinner and the step. Before, an import showed nothing here until it completed. Its row opens
+   the progress of the import on the home page (showImport), when the job of the import runs (`job`). Until then
+   (the game is copied into decompdecomp) the row is not a link: its step says so, and the pointer shows that the row
+   opens nothing (app.css, `div.nav-proj`). */
+function cancelImportHtml(p) {
+  if (p.cancelling || !(p.job || uploads.has(p.upload))) return "";
+  return `<button class="np-x" type="button" data-cancel="${esc(p.job || "")}" data-upload="${esc(p.upload || "")}" data-title="${esc(p.title)}" title="Cancel this import" aria-label="Cancel the import of ${esc(p.title)}">×</button>`;
+}
+/* The X of the row of an import: the import stops, and what it made goes (the server: `listed` in routes/state.py).
+   An import whose job did not start is the upload of this page (`uploads`, home.js): the upload stops. A job stops
+   at its next step: until then its row says "cancelling" and has no X. */
+$("navProjects").addEventListener("click", async (e) => {
+  const x = e.target.closest(".np-x");
+  if (!x) return;
+  e.preventDefault();  // (the X is in the link of the row)
+  e.stopPropagation();
+  if (!confirm(`Cancel the import of ${x.dataset.title}?\n\nWhat the import made is deleted. Your copy of the game stays.`)) return;
+  try {
+    if (x.dataset.cancel) await api("/api/job/cancel", { method: "POST", body: { id: x.dataset.cancel } });
+    else cancelUpload(x.dataset.upload);
+  } catch (err) { toast(esc(err.message), "err"); }
+  loadNav();
+});
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
   box.innerHTML = S.projects.map((p) => {
     const pct = codePct(p);
     const short = p.platform_short || p.platform_name || "?";
+    if (p.importing) return `<${p.job ? `a href="#/import/${esc(p.job)}" data-job="${esc(p.job)}"` : "div"} class="nav-proj" title="${esc(p.importing)}">
+      <span class="np-top"><span class="spin-dot" aria-hidden="true"></span><span class="np-name">${esc(p.title)}</span>${cancelImportHtml(p)}</span>
+      <span class="np-meta"><span class="np-step">${esc(p.importing)}</span></span>
+      <span class="workbar" role="progressbar" aria-label="Preparation of ${esc(p.title)}"><i></i></span></${p.job ? "a" : "div"}>`;
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
     if (p.missing) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.missing)}">
@@ -54,6 +101,7 @@ function renderNav() {
       <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
   }).join("");
   setWidths(box);
+  keepTime(box);
   markNav();
 }
 setInterval(() => loadNav(true), 5000);

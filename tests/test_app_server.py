@@ -1,5 +1,6 @@
 """The local app: GUI API security, demo import, live feed, agent output parsing, the built-in API agent."""
 
+import hashlib
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from decompnet import agents as kinds
-from decompnet import toolchains
+from decompnet import consoles, toolchains
 from decompnet.agents import api
 from decompnet.app import agents, window
 from decompnet.app.engine import RomNetwork
@@ -214,6 +215,337 @@ def test_import_demo_and_follow_it_live(app):
     assert live["overview"]["functions"] >= 95 and live["events"][0]["kind"] == "import"
     detail = client.get(f"/api/function?slug={slug}&name=func_80000460").json()
     assert "glabel" in detail["asm"]
+
+
+class _SlowConsole(consoles.Console):
+    """A PROJECT-mode console for a test. It makes the project of a game when the test permits it (`made`), and the
+    first measurement of the project ends when the test permits it (`measured`): a slow import, one step at a time."""
+    id, name, mode = "slow", "Slow", consoles.PROJECT
+
+    def __init__(self):
+        super().__init__()
+        self.made: dict[str, threading.Event] = {}  # the name of a game -> set when its project can be made
+        self.measured: dict[str, threading.Event] = {}  # the name of a game -> set when its measurement can end
+
+    def game_info(self, game) -> dict:
+        return {"platform": "gc", "id": "g", "title": game.stem, "sha1": hashlib.sha1(game.read_bytes()).hexdigest()}
+
+    def create_project(self, root, game, *, compiler=None, log=print) -> dict:
+        log("making the project")
+        assert self.made[game.stem].wait(10)
+        root.mkdir(parents=True)
+        return {"platform": "gc", "id": "g", "title": game.stem, "compiler": "c"}
+
+
+@pytest.fixture
+def slow_imports(app, tmp_path, monkeypatch):
+    """Imports that go through the engine with `_SlowConsole`. Gives a function that starts the import of a new game
+    (it gives the job of the import) and the console. At the end, it lets all imports complete and removes their
+    projects."""
+    from decompnet.app.forkengine import ForkEngine
+
+    client, net, _ = app
+    console, jobs = _SlowConsole(), []
+    monkeypatch.setattr(consoles, "identify", lambda data: console)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+
+    def check(self, slug, log=print):
+        log("measuring the project")
+        assert console.measured[net._project(slug)["name"]].wait(10)
+    monkeypatch.setattr(ForkEngine, "check", check)
+
+    def start(name: str) -> str:
+        game = tmp_path / f"{name}.bin"
+        game.write_bytes(name.encode())
+        console.made[name], console.measured[name] = threading.Event(), threading.Event()
+        steps = len(jobs)
+        jobs.append(client.post("/api/import", params={"confirmed": "1", "path": str(game)},
+                                headers={"X-Decomp": "1"}).json()["job"])
+        _until(lambda: len(client.get("/api/job", params={"id": jobs[steps]}).json()["log"]) > 0)
+        return jobs[steps]
+
+    before = [p["slug"] for p in client.get("/api/projects").json()]
+    yield start, console
+    for event in [*console.made.values(), *console.measured.values()]:
+        event.set()
+    _until(lambda: all(client.get("/api/job", params={"id": job}).json()["state"] != "running" for job in jobs))
+    for p in client.get("/api/projects").json():
+        if p["slug"] not in before:
+            net.remove_project(p["slug"])
+
+
+def _until(done) -> None:
+    for _ in range(1000):
+        if done():
+            return
+        time.sleep(0.01)
+    raise AssertionError("the import did not get to this step in 10 seconds")
+
+
+def _shown(client) -> list[dict]:
+    """The list of projects, with only what tells a game that is imported from a project."""
+    return [{k: p[k] for k in ("slug", "title", "importing", "job") if k in p} for p in client.get("/api/projects").json()]
+
+
+def test_a_game_is_in_the_project_list_from_the_start_of_its_import(app, slow_imports):
+    """Before, the list of projects showed nothing of a game until its import completed (minutes for a big game). The
+    game is in the list from the start of its import, with the mark `importing` (the step of the import). A project
+    that is in the database before its import completes (a PROJECT-mode game, before its first measurement) has the
+    same mark and replaces that line. The mark goes away when the import completes. The line and the mark have the
+    job of the import: the page opens the progress of the import with it."""
+    client, _, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    job = start("my-game")
+    assert _shown(client) == [{"title": "my-game.bin", "importing": "making the project", "job": job}] + before
+    console.made["my-game"].set()
+    _until(lambda: "slug" in _shown(client)[0])
+    _until(lambda: _shown(client)[0]["importing"] == "measuring the project")
+    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game", "importing": "measuring the project",
+                               "job": job}] + before
+    console.measured["my-game"].set()
+    _until(lambda: "importing" not in _shown(client)[0])
+    assert _shown(client) == [{"slug": "my-game-g", "title": "my-game"}] + before
+
+
+def test_an_import_that_does_not_end_does_not_mark_the_project_of_a_different_import(app, slow_imports):
+    """The import of a disc image did not end, and a second game was imported after it started. The list showed the
+    project of the second game with the mark of the first import, and the line of the first game was not there.
+    Each import marks only the project that it made."""
+    client, _, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    stuck = start("stuck-game")
+    start("quick-game")
+    console.made["quick-game"].set()
+    console.measured["quick-game"].set()
+    _until(lambda: len(_shown(client)) == len(before) + 2 and "importing" not in _shown(client)[1])
+    assert _shown(client) == [{"title": "stuck-game.bin", "importing": "making the project", "job": stuck},
+                              {"slug": "quick-game-g", "title": "quick-game"}] + before
+
+
+def _cancel(client, job: str) -> None:
+    assert client.post("/api/job/cancel", json={"id": job}, headers={"X-Decomp": "1"}).json() == {"cancelled": True}
+
+
+def test_a_cancelled_import_leaves_no_project_and_no_folder(app, slow_imports, tmp_path):
+    """The row of an import has an X that cancels the import. A job stops at its next step, not at once: until then
+    the row says so, with the mark `cancelling` (the page shows no X then). The import that was cancelled leaves
+    nothing: the project that it made goes from the app, with its folder. The user's copy of the game stays."""
+    client, net, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    job = start("dropped-game")
+    console.made["dropped-game"].set()
+    _until(lambda: _shown(client)[0].get("importing") == "measuring the project")
+    assert (net.workspace / "dropped-game-g").is_dir()
+    _cancel(client, job)
+    row = client.get("/api/projects").json()[0]
+    assert row["importing"] == "cancelling: the step that runs ends first" and row["cancelling"] is True
+    console.measured["dropped-game"].set()  # the step that ran ends
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    ended = client.get("/api/job", params={"id": job}).json()
+    assert ended["state"] == "cancelled" and ended["error"] == "The import was cancelled."
+    assert _shown(client) == before and not (net.workspace / "dropped-game-g").exists()
+    assert (tmp_path / "dropped-game.bin").is_file()
+
+
+def test_an_import_starts_the_autopilot_only_when_it_can_no_longer_be_cancelled(app, slow_imports, monkeypatch):
+    """The autopilot started before the last check for a cancel: a cancel during that removed the project under the
+    autopilot that ran for it. And a cancel between that check and the end of the job gave a job that said
+    "cancelled" with its project kept. The import says when it can no longer be cancelled (`log.commit`): the
+    autopilot starts after that, and a cancel after that is refused."""
+    client, net, _ = app
+    start, console = slow_imports
+    started, go_on, late = [], threading.Event(), []
+
+    def autopilot(slug):
+        started.append(slug)
+        late.append(client.post("/api/job/cancel", json={"id": jobs[-1]}, headers={"X-Decomp": "1"}).json())
+        assert go_on.wait(10)
+    monkeypatch.setattr(net, "start_autopilot", autopilot)
+    client.post("/api/settings", json={"autopilot": True}, headers={"X-Decomp": "1"})  # (a test before set it off)
+    jobs = [start("dropped-game")]
+    console.made["dropped-game"].set()
+    _until(lambda: _shown(client)[0].get("importing") == "measuring the project")
+    _cancel(client, jobs[0])
+    console.measured["dropped-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": jobs[0]}).json()["state"] != "running")
+    assert started == []  # cancelled: no autopilot for a project that goes
+
+    jobs.append(start("finished-game"))
+    console.made["finished-game"].set()
+    console.measured["finished-game"].set()
+    _until(lambda: late)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": jobs[1]}).json()["state"] != "running")
+    assert started == ["finished-game-g"] and late == [{"cancelled": False}]
+    assert client.get("/api/job", params={"id": jobs[1]}).json()["state"] == "done"
+    assert (net.workspace / "finished-game-g").is_dir()
+
+
+def test_the_x_of_an_upload_cancels_the_import_that_the_upload_started(app, slow_imports, tmp_path):
+    """The page stops the request of an upload that the user cancels. A request that stops after its last byte
+    arrived starts the job all the same, and the page never gets that job: the import went on, and the page said
+    "cancelled". The page gives a name to each upload, and the server cancels by that name: the job that the upload
+    started, or the upload before its job starts. The row of an upload has that name, not only the name of its file."""
+    import asyncio
+
+    client, net, _ = app
+    _, console = slow_imports
+    headers = WINDOW | {"X-Decomp": "1"}
+    console.made["sent-game"], console.measured["sent-game"] = threading.Event(), threading.Event()
+    seen = []
+
+    async def upload():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{PORT}", headers=headers) as http:
+            async def body(cancel):
+                yield b"sent-game"
+                seen.append((await http.get("/api/projects")).json()[0])
+                if cancel:
+                    seen.append((await http.post("/api/import/cancel", json={"upload": "u2"})).json())
+
+            params = {"confirmed": "1", "name": "sent-game.bin"}
+            started = await http.post("/api/import", params=params | {"upload": "u1"}, content=body(False))
+            refused = await http.post("/api/import", params=params | {"upload": "u2"}, content=body(True))
+            unknown = await http.post("/api/import/cancel", json={"upload": "u3"})
+            return started, refused, unknown
+
+    before = _shown(client)
+    started, refused, unknown = asyncio.run(upload())
+    assert seen[0] == {"title": "sent-game.bin", "importing": "copying the game into decompdecomp", "upload": "u1"}
+    # cancelled during its upload: no job starts, and its copy is not kept
+    assert seen[2] == {"cancelled": True} and refused.status_code == 400 and "cancelled" in refused.json()["error"]
+    assert unknown.json() == {"cancelled": False}
+    job = started.json()["job"]
+    # its job runs: the name of the upload cancels the job
+    assert client.post("/api/import/cancel", json={"upload": "u1"}, headers={"X-Decomp": "1"}).json() == {"cancelled": True}
+    console.made["sent-game"].set()
+    console.measured["sent-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == before and not list(net.workspace.rglob("sent-game.bin"))
+
+
+def test_an_import_cancelled_before_its_project_is_made_leaves_nothing(app, slow_imports):
+    client, net, _ = app
+    start, console = slow_imports
+    before = _shown(client)
+    job = start("early-game")
+    _cancel(client, job)
+    console.made["early-game"].set()
+    console.measured["early-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == before and not (net.workspace / "early-game-g").exists()
+
+
+def test_a_cancelled_import_does_not_remove_a_game_that_was_a_project_before(app, slow_imports, tmp_path):
+    """The import of a game that is a project only finds that project. A cancel of that import removes nothing."""
+    client, net, _ = app
+    start, console = slow_imports
+    first = start("kept-game")
+    console.made["kept-game"].set()
+    console.measured["kept-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": first}).json()["state"] != "running")
+    held, go_on = threading.Event(), threading.Event()
+    real = console.game_info
+
+    def game_info(game):
+        held.set()
+        assert go_on.wait(10)
+        return real(game)
+    console.game_info = game_info
+    again = client.post("/api/import", params={"confirmed": "1", "path": str(tmp_path / "kept-game.bin")},
+                        headers={"X-Decomp": "1"}).json()["job"]
+    assert held.wait(10)
+    _cancel(client, again)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": again}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": again}).json()["state"] == "cancelled"
+    assert "kept-game-g" in [p.get("slug") for p in _shown(client)] and (net.workspace / "kept-game-g").is_dir()
+
+
+def test_a_cancelled_rom_import_leaves_no_folder(tmp_path, monkeypatch):
+    """A ROM-mode import makes the folder of the game before the game is a project. A cancel during the split left
+    that folder. After the project is in the database, a cancel removes the project and the folder."""
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    mcp, _, security, _ = build(net, tmp_path, PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
+    n64 = consoles.get("n64")
+    splitting, go_on = threading.Event(), threading.Event()
+    real_split = n64.split_game
+
+    def split_game(workdir, picked, log=print, **more):
+        splitting.set()
+        assert go_on.wait(10)
+        log("the split goes on")  # a job that was cancelled stops at its next step
+        return real_split(workdir, picked, log=log, **more)
+    monkeypatch.setattr(n64, "split_game", split_game)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+    job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
+    assert splitting.wait(60) and (tmp_path / "demo-quest-64").is_dir()
+    _cancel(client, job)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == [] and not (tmp_path / "demo-quest-64").exists()
+
+
+@pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None, reason="needs gcc-2.7.2-kmc")
+def test_a_rom_game_is_one_entry_in_the_list_while_its_import_completes(tmp_path, monkeypatch):
+    """A ROM-mode import puts the project in the database and then continues (the work of the console after the
+    import). During that time the list showed the game two times: as the line of the import and as the project. The
+    project has the mark and replaces the line."""
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    mcp, _, security, _ = build(net, tmp_path, PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
+    stored, go_on = threading.Event(), threading.Event()
+
+    def after_import(net, slug, chosen=None, log=print):
+        stored.set()
+        assert go_on.wait(10)
+    monkeypatch.setattr(consoles.get("n64"), "after_import", after_import)
+    monkeypatch.setattr(net, "start_autopilot", lambda slug: None)
+    job = client.post("/api/import?demo=1", content=b"", headers={"X-Decomp": "1"}).json()["job"]
+    try:
+        assert stored.wait(60)
+        (project,) = _shown(client)
+        assert project["slug"] == "demo-quest-64" and project["importing"] and project["job"] == job
+    finally:
+        go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert _shown(client) == [{"slug": "demo-quest-64", "title": "DEMO QUEST 64"}]
+
+
+def test_an_uploaded_game_is_listed_while_it_is_copied_and_not_after_a_refused_upload(app):
+    """A dropped game is sent to the app before its import starts (a disc image has hundreds of megabytes). The game
+    is in the list of projects from its first bytes. An upload that the app refuses (an empty file) leaves no line."""
+    import asyncio
+
+    client, _, _ = app
+    headers = WINDOW | {"X-Decomp": "1"}
+    seen = []
+
+    async def upload():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{PORT}", headers=headers) as http:
+            before = (await http.get("/api/projects")).json()
+
+            async def body():
+                yield b""
+                seen.append((await http.get("/api/projects")).json())  # (the app waits for the next part)
+
+            refused = await http.post("/api/import", params={"confirmed": "1", "name": "dropped-game.bin"}, content=body())
+            return before, refused, (await http.get("/api/projects")).json()
+
+    before, refused, after = asyncio.run(upload())
+    assert seen == [[{"title": "dropped-game.bin", "importing": "copying the game into decompdecomp"}] + before]
+    assert refused.status_code == 400 and "empty" in refused.json()["error"]
+    assert after == before
 
 
 def test_the_home_page_waits_for_no_agent_and_no_projects_files(tmp_path, monkeypatch):
@@ -789,6 +1121,42 @@ def test_a_cancelled_job_stops_at_its_next_checkpoint(tmp_path):
             break
         time.sleep(0.01)
     assert jobs.jobs[jid]["state"] == "cancelled"
+
+
+def test_a_job_that_committed_can_no_longer_be_cancelled():
+    """A job that undoes its work on a cancel (an import) says when the last moment for a cancel is over. A cancel
+    before that makes `commit` raise, so the job undoes its work. A cancel after that is refused: before, it gave a
+    job that said "cancelled" with its work kept."""
+    from decompnet.app.support import Jobs
+
+    jobs = Jobs()
+    entered, committed, finish = threading.Event(), threading.Event(), threading.Event()
+
+    def work(log):
+        entered.set()
+        assert finish.wait(2)
+        log.commit()
+        committed.set()
+        assert finish.wait(2)
+        return "kept"
+
+    early = jobs.start("import", work)
+    assert entered.wait(1) and jobs.cancel(early)
+    finish.set()
+    for _ in range(100):
+        if jobs.jobs[early]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[early]["state"] == "cancelled" and not committed.is_set()
+
+    entered.clear()
+    late = jobs.start("import", work)
+    assert committed.wait(1) and not jobs.cancel(late)
+    for _ in range(100):
+        if jobs.jobs[late]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[late]["state"] == "done" and jobs.jobs[late]["result"] == "kept"
 
 
 def test_cancellation_accepted_before_a_job_returns_cannot_report_success():

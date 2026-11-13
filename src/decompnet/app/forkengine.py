@@ -815,6 +815,7 @@ class ForkEngine:
                          "confirmed_at": time.time()}}
         self._register(slug, facts["title"], f"{consoles.name(facts['platform'])} game {facts['id']}, from scratch",
                        dest, cfg, f"started {facts['id']} from scratch")
+        getattr(log, "project", lambda slug: None)(slug)  # the job of the import marks this project until it completes
         self.check(slug, log=log)
         return slug
 

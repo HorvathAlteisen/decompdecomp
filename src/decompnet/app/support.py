@@ -101,7 +101,8 @@ class Jobs:
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decompdecomp")
 
-    def start(self, kind: str, fn) -> str:
+    def start(self, kind: str, fn, cancelled: str = "Opening the saved project was cancelled.") -> str:
+        """`cancelled`: what the job says when the user cancelled it (an import: "The import was cancelled.")."""
         jid = uuid.uuid4().hex[:JOB_ID_CHARS]
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None, "t": time.time()}
         cancel = self.cancel_events[jid] = threading.Event()
@@ -116,9 +117,20 @@ class Jobs:
 
         def check_cancel() -> None:
             if cancel.is_set():
-                raise RuntimeError("opening the saved project was cancelled")
+                raise RuntimeError(cancelled)
 
         log.check_cancel = check_cancel
+        log.cancelled = cancel.is_set  # for a job that undoes its work when the user cancelled it (an import)
+
+        def commit() -> None:
+            """For a job that undoes its work when the user cancelled it: the last moment of a cancel. Raises when
+            the user cancelled the job. From then, `cancel` says no. Before, a cancel between the last check of the
+            job and its end gave a job that said "cancelled" with its work kept."""
+            with self._lock:
+                check_cancel()
+                job["committed"] = True
+
+        log.commit = commit
 
         def run():
             try:
@@ -130,7 +142,7 @@ class Jobs:
                 logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
             except BaseException as e:  # noqa: BLE001  a job must end, whatever went wrong
                 if cancel.is_set():
-                    job["error"] = "Opening the saved project was cancelled."
+                    job["error"] = cancelled
                     job["state"] = "cancelled"
                     logger.info("job %s %s cancelled", kind, jid)
                     return
@@ -149,10 +161,15 @@ class Jobs:
     def cancel(self, jid: str) -> bool:
         with self._lock:
             job = self.jobs.get(jid)
-            if not job or job["state"] != "running":
+            if not job or job["state"] != "running" or job.get("committed"):
                 return False
             self.cancel_events[jid].set()
             return True
+
+    def cancelling(self, jid: str | None) -> bool:
+        """True from the cancel of a job that runs until the job ends: a job stops at its next step, not at once."""
+        job, event = self.jobs.get(jid), self.cancel_events.get(jid)
+        return bool(job and event and job["state"] == "running" and event.is_set())
 
 
 class Settings:

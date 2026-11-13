@@ -6,7 +6,6 @@ Each is fn(slug, request, data) wrapped by with_project, which checks the reques
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from starlette.requests import Request
@@ -120,15 +119,7 @@ def register(app: App) -> None:
         return {"ok": why is None, "message": why}
 
     def p_delete(slug, request, data):
-        manager.forget_project(slug)  # (it stopped every project's helpers)
-        proj = net.project_row(slug)
-        net.knowledge.forget(slug)
-        net.remove_project(slug)
-        if data.get("files"):
-            shutil.rmtree(proj["root"], ignore_errors=True)
-        if settings.data.get("last_project") == slug:
-            settings.data["last_project"] = None
-            settings.save()
+        app.remove_project(slug, files=bool(data.get("files")))  # (routes/state.py)
         return {"ok": True}
 
     def p_try(slug, request, data):
