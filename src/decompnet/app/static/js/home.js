@@ -51,6 +51,7 @@ function renderCards() {
       card.className = "card";
       if (p.job) card.href = `#/import/${p.job}`;
       card.innerHTML = importingProjectHtml(p);
+      keepTime(card);  // (sidebar.js: the bar of a card that is drawn again does not start again)
       box.append(card);
       continue;
     }

@@ -126,6 +126,21 @@ def test_a_game_being_imported_shows_at_once_with_a_spinner(gui):
     assert importing["calls"] == ["/api/import", "/api/projects", "/api/job"]
 
 
+def test_the_bar_of_an_import_row_does_not_start_again_and_a_row_that_opens_nothing_says_so(gui):
+    """Each time the list of projects was drawn again (each 5 s, and at each click on a row), the progress bars of all
+    imports started again from the left. A bar that is drawn again continues at the time of the clock. The row of an
+    import whose job did not start (its game is copied into the app) is not a link: the pointer over it shows that the row
+    opens nothing."""
+    static = Path(__file__).parents[1] / "src" / "decompnet" / "app" / "static"
+    css, sidebar = (static / "app.css").read_text(encoding="utf-8"), (static / "js" / "sidebar.js").read_text(encoding="utf-8")
+    delay = re.fullmatch(r"-(\d+)ms", gui["checks"]["importing"]["started"]["barDelay"])
+    assert delay and int(delay[1]) < 2500
+    # the times in sidebar.js are those of the animations in app.css
+    assert "animation: workbar 1.25s ease-in-out infinite alternate" in css and "WORKBAR_MS = 2500" in sidebar
+    assert "animation: spin .8s linear infinite" in css and "SPIN_MS = 800" in sidebar
+    assert "div.nav-proj { cursor: not-allowed; }" in css
+
+
 def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
     """The home page hid the progress of an import each time it opened, and nothing brought it back. The row of an
     import in the sidebar shows the step of the import, and it opens the home page with the progress of that import

@@ -373,7 +373,7 @@ def test_an_uploaded_game_is_listed_while_it_is_copied_and_not_after_a_refused_u
             return before, refused, (await http.get("/api/projects")).json()
 
     before, refused, after = asyncio.run(upload())
-    assert seen == [[{"title": "dropped-game.bin", "importing": "starting"}] + before]
+    assert seen == [[{"title": "dropped-game.bin", "importing": "copying the game into decompdecomp"}] + before]
     assert refused.status_code == 400 and "empty" in refused.json()["error"]
     assert after == before
 

@@ -3,6 +3,18 @@
 /* The page's CSP allows no inline style attributes: widths are set through the DOM instead. */
 function setWidths(root) { root.querySelectorAll("[data-w]").forEach((el) => { el.style.width = el.dataset.w + "%"; }); }
 
+/* The spinners and the progress bars of rows that were drawn again continue their animation at the point where the
+   clock says it is, not at its start. Before, each time the list was drawn again (each 5 s, and at each click on a
+   row) the bars of all imports started again from the left. Only for elements that are new: a change of the delay
+   moves an animation that runs. The times are those of `.spin-dot` and `.workbar i` in app.css (the bar goes there
+   and back, 2 x 1.25 s). */
+const SPIN_MS = 800, WORKBAR_MS = 2500;
+function keepTime(root) {
+  const now = Date.now();
+  root.querySelectorAll(".spin-dot").forEach((el) => { el.style.animationDelay = `-${now % SPIN_MS}ms`; });
+  root.querySelectorAll(".workbar i").forEach((el) => { el.style.animationDelay = `-${now % WORKBAR_MS}ms`; });
+}
+
 function markNav() {
   const h = location.hash || "#/";
   const route = h.startsWith("#/p/") ? "project" : (h.replace("#/", "") || "home");
@@ -43,7 +55,9 @@ function colourOf(slug) {
 
 /* A game that is imported (`importing`: the step of its import, routes/state.py) is in the list from the start of
    the import, with a spinner and the step. Before, an import showed nothing here until it completed. Its row opens
-   the progress of the import on the home page (showImport), when the job of the import runs (`job`). */
+   the progress of the import on the home page (showImport), when the job of the import runs (`job`). Until then
+   (the game is copied into decompdecomp) the row is not a link: its step says so, and the pointer shows that the row
+   opens nothing (app.css, `div.nav-proj`). */
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
@@ -68,6 +82,7 @@ function renderNav() {
       <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
   }).join("");
   setWidths(box);
+  keepTime(box);
   markNav();
 }
 setInterval(() => loadNav(true), 5000);

@@ -63,6 +63,7 @@ def register(app: App) -> None:
             except NetworkError:
                 pass
 
+    COPYING = "copying the game into decompdecomp"  # the step of an import while its upload runs
     importing: list[dict] = []  # the imports that run, oldest first: {"title", "job", "slug"} (api_import)
 
     def preparing() -> tuple[list[dict], dict[str, dict]]:
@@ -77,7 +78,10 @@ def register(app: App) -> None:
         lines, marks = [], {}
         for entry in [e for e in list(importing) if e["title"]]:
             said = [line.strip() for line in list(jobs.jobs.get(entry.get("job"), {}).get("log", [])) if line.strip()]
-            shown = {"importing": said[-1] if said else "starting"} | ({"job": entry["job"]} if "job" in entry else {})
+            # no job: the upload of the game runs (only an upload has its name before its job, start_import). Before,
+            # the step was "starting" for the whole upload of a disc, with a row that did not open
+            first = "starting" if "job" in entry else COPYING
+            shown = {"importing": said[-1] if said else first} | ({"job": entry["job"]} if "job" in entry else {})
             if entry.get("slug"):
                 marks[entry["slug"]] = shown
             else:

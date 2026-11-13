@@ -445,7 +445,8 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
   // import requests the list immediately after its job starts (the timer of the list comes every 5 s)
   checks.importing = await vm.runInContext(`(async () => {
     const was = { projects: S.projects, api, importFailed };
-    const nav = { innerHTML: "", querySelectorAll: () => [] }, cards = [], calls = [];
+    const bar = { style: {} };  // the progress bar of the row that renderNav drew: keepTime gives it the time of the clock
+    const nav = { innerHTML: "", querySelectorAll: (what) => (what === ".workbar i" ? [bar] : []) }, cards = [], calls = [];
     const box = { set innerHTML(_) { cards.length = 0; }, append: (card) => cards.push(card.href + "|" + card.innerHTML) };
     const original = document.getElementById;
     document.getElementById = (id) => (id === "navProjects" ? nav : id === "projects" ? box : original(id));
@@ -459,7 +460,7 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
     try {
       S.projects = [game];
       await loadNav();
-      const started = { nav: nav.innerHTML, cards: [...cards] };
+      const started = { nav: nav.innerHTML, cards: [...cards], barDelay: bar.style.animationDelay };
       list = [{ title: "my <game>.z64", importing: "splitting the game", job: "j1" }, game];  // its upload ended: its job runs
       await loadNav();
       const running = { nav: nav.innerHTML, cards: [...cards] };
