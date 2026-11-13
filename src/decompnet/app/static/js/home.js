@@ -1,10 +1,14 @@
 "use strict";  // each script is strict on its own (see base.js)
 /* ------------------------------------------------------------------ home */
 let picked = null;
-/* The drop zone shows the progress of one import at a time: `shownImport` is the job of that import ("" when the drop
-   zone shows no import, or the upload of a game whose job did not start). */
-let shownImport = "";
-const followedImports = new Set();  // the jobs of the imports that this page follows to their end
+/* The drop zone shows the progress of one import at a time: `shownImport` is that import (null when the drop zone
+   shows no import). An import is {job, title, heading, log, step, t0, up}: `up` is the part of its upload that is
+   done (null when it has no upload, or when the upload ended), `t0` the time it started (null when this page did not
+   start it). `imports` has each import that this page follows to its end, by its job. Only `paintImport` writes the
+   progress of an import into the drop zone, and only for `shownImport`. Before, each import wrote its upload, its bar
+   and its end there directly: with two imports, the drop zone changed between the two. */
+let shownImport = null;
+const imports = new Map();
 
 /* Once, after this version's first start: the old `decomp mcp` entries it took out of the agents' settings
    (app/cleanup.py), each a sentence from the app, until the user dismisses them. Those entries started decompdecomp
@@ -25,6 +29,7 @@ function renderBridgesNotice() {
 
 async function showHome() {
   show("home");
+  shownImport = null;
   resetDrop();
   loadState().catch(() => {});  // the version and the compiler lists: the projects don't wait for them
   try { S.projects = await api("/api/projects"); } catch { S.projects = S.projects || []; }
@@ -510,25 +515,61 @@ function fillCompilers(select, current, platform, only) {
   }).join("");
 }
 
-/* Follows an import to its end. While the drop zone shows this import, the drop zone gets its step and its log. At
-   the end, the project of the import opens, or the drop zone shows why the import failed. */
-async function followImport(job, name) {
-  if (followedImports.has(job)) return;
-  followedImports.add(job);
+/* The drop zone shows this import, and no other, from now. */
+function takeDrop(imp) {
+  shownImport = imp;
+  $("dropIdle").hidden = true;
+  $("dropPicked").hidden = true;
+  $("dropError").hidden = true;
+  $("dropBusy").hidden = false;
+  paintImport(imp);
+}
+
+/* Writes the progress of an import into the drop zone, when the drop zone shows that import. Each part comes from
+   the import itself (its upload, the log that the page got last, its time): the row of a different import shows
+   that import completely and immediately. Before, the step came from the list of projects (as much as 5 s old) and
+   the log was empty until the server answered again, which is seconds while two imports run. */
+function paintImport(imp) {
+  if (shownImport !== imp) return;
+  const uploading = imp.up !== null;
+  $("impUp").hidden = !uploading;
+  $("impWork").hidden = uploading;
+  if (uploading) $("impUp").firstElementChild.style.width = (imp.up * 100).toFixed(1) + "%";
+  $("busyTitle").textContent = uploading && imp.up < 1 ? `Copying ${imp.heading.replace(/^\w+ /, "")} into decompdecomp… ${(imp.up * 100).toFixed(0)}%` : imp.heading;
+  const last = imp.log.filter((l) => l.trim()).pop();
+  $("busyStep").textContent = last ? last.trim().replace(/\s+/g, " ").slice(0, 120) : imp.step || "starting";
+  $("jobLog").textContent = imp.log.join("\n");
+  $("jobLog").scrollTop = $("jobLog").scrollHeight;
+  paintImportTime(imp);
+}
+
+function paintImportTime(imp) {
+  if (shownImport !== imp) return;
+  const s = imp.t0 === null ? 0 : Math.round((Date.now() - imp.t0) / 1000);
+  $("busyTime").textContent = s >= 3 ? ` · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "";
+}
+
+/* An import failed: the drop zone shows why, and it shows no import. The address of an import goes with it, or the
+   row of that import stayed the selected one and did not open it again. */
+function importEnded(imp, e) {
+  shownImport = null;
+  if (location.hash.startsWith("#/import/")) { history.replaceState(null, "", "#/"); markNav(); }
+  loadNav();
+  importFailed(imp.title, e, imp.log.join("\n"));
+}
+
+/* Follows an import to its end. At the end, the project of the import opens, or the drop zone shows why the import
+   failed. */
+async function followImport(imp) {
+  if (imports.has(imp.job)) return;
+  imports.set(imp.job, imp);
   try {
-    const res = await followJob(job, null, (log) => {
-      if (shownImport !== job) return;
-      $("jobLog").textContent = log.join("\n");
-      $("jobLog").scrollTop = $("jobLog").scrollHeight;
-      const last = log.filter((l) => l.trim()).pop();
-      if (last) $("busyStep").textContent = last.trim().replace(/\s+/g, " ").slice(0, 120);
-    });
+    const res = await followJob(imp.job, null, (log) => { imp.log = log; paintImport(imp); });
     loadNav();
     location.hash = `#/p/${res.slug}`;
   } catch (e) {
-    loadNav();
-    importFailed(name, e, "");
-  } finally { followedImports.delete(job); }
+    importEnded(imp, e);
+  } finally { imports.delete(imp.job); }
 }
 
 /* The home page with the progress of an import that runs. The row and the card of the import open it
@@ -537,57 +578,37 @@ function showImport(job) {
   showHome();
   const game = S.projects.find((p) => p.job === job);
   if (!game) { location.hash = "#/"; return; }  // the import ended, or the list is not there: no row to mark
-  shownImport = job;
-  $("dropIdle").hidden = true;
-  $("dropBusy").hidden = false;
-  $("impUp").hidden = true;
-  $("impWork").hidden = false;
-  $("busyTitle").textContent = `Analysing ${game.title}…`;
-  $("busyStep").textContent = game.importing;
-  $("jobLog").textContent = "";
-  $("busyTime").textContent = "";
-  followImport(job, game.title);
+  const imp = imports.get(job) || { job, title: game.title, log: [], step: game.importing, t0: null, up: null };
+  imp.heading = `Analysing ${game.title}…`;
+  takeDrop(imp);
+  followImport(imp);
 }
 
 async function runImport(query, file, title, name = "") {
-  shownImport = "";
+  const upload = file instanceof Blob;
+  const imp = { job: "", title: name || title.replace(/^\w+ |…$/g, ""), heading: title, log: [], step: "", t0: Date.now(), up: upload ? 0 : null };
   // the drop zone showed a different import: its address goes, or its row stayed the selected one and did not open
   // it again (replaceState: a change of the hash opens the home page again, and that hides this import)
   if (location.hash.startsWith("#/import/")) history.replaceState(null, "", "#/");
-  $("dropIdle").hidden = true;
-  $("dropPicked").hidden = true;
-  $("dropBusy").hidden = false;
-  $("busyTitle").textContent = title;
-  $("busyStep").textContent = "starting";
-  $("jobLog").textContent = "";
-  $("impUp").hidden = !(file instanceof Blob);
-  $("impWork").hidden = file instanceof Blob;
-  const t0 = Date.now();
-  let job = "";  // the job of this import, when it runs
-  const tick = setInterval(() => {
-    if (shownImport !== job) return;
-    const s = Math.round((Date.now() - t0) / 1000);
-    $("busyTime").textContent = s >= 3 ? ` · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "";
-  }, 1000);
+  takeDrop(imp);
+  const tick = setInterval(() => paintImportTime(imp), 1000);
   let listed = false;  // the list of projects was requested again: the server has the game from the first bytes of the upload
   try {
     let started;
-    if (file instanceof Blob) {
+    if (upload) {
       started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(name || file.name || "game.bin")}`, file,
-        (p) => { if (!listed) { listed = true; loadNav(); } $("impUp").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; $("busyTitle").textContent = p < 1 ? `Copying ${title.replace(/^\w+ /, "")} into decompdecomp… ${(p * 100).toFixed(0)}%` : title; });
+        (p) => { if (!listed) { listed = true; loadNav(); } imp.up = p; paintImport(imp); });
     } else {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }
-    $("impUp").hidden = true;
-    $("impWork").hidden = false;
+    imp.up = null;
+    imp.job = started.job;
+    paintImport(imp);
     loadNav();
-    job = started.job;
-    if (!shownImport) shownImport = job;
-    await followImport(job, name || title.replace(/^\w+ |…$/g, ""));
+    await followImport(imp);
   } catch (e) {
-    loadNav();
-    importFailed(name || title.replace(/^\w+ |…$/g, ""), e, $("jobLog").textContent);
-  } finally { clearInterval(tick); $("busyTime").textContent = ""; $("impWork").hidden = true; }
+    importEnded(imp, e);
+  } finally { clearInterval(tick); }
 }
 
 /* A failed import stays on screen with what happened, ready to report: a toast is gone before it's read. */
@@ -629,6 +650,7 @@ $("analyse").onclick = async () => {
   if (!picked || $("analyse").disabled) return;
   const tc = $("compilerRow").hidden ? "" : $("compilerPick").value;
   const title = `Analysing ${picked.info.title}…`;
+  shownImport = null;  // an import that the drop zone showed does not write into the progress of this one
   if (!$("mwConsent").hidden) {
     $("dropPicked").hidden = true; $("dropBusy").hidden = false; $("impUp").hidden = true;
     try { await ensureCodeWarrior(); } catch (e) {

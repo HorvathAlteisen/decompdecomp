@@ -556,6 +556,66 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       document.getElementById = original; document.querySelectorAll = originalAll;
     }
   })()`, ctx);
+  // two imports at the same time: the drop zone shows one of them, and the other one writes nothing into it (its
+  // upload, its bar, its step). The uploads continue when the test says so (`sent`), and the server answers for a job
+  // only when the test lets the timers run (`turn`): a row shows its import before the server answers again
+  checks.importsApart = await vm.runInContext(`(async () => {
+    const was = { projects: S.projects, api, uploadFile, setTimeout, setInterval, hash: location.hash };
+    const ids = ["dropIdle", "dropPicked", "dropBusy", "dropError", "busyTitle", "busyStep", "busyTime", "jobLog", "impUp", "impWork", "errName", "errMsg"];
+    const panel = Object.fromEntries(ids.map((id) => [id, { hidden: false, textContent: "", firstElementChild: { style: {} } }]));
+    const nav = { innerHTML: "", querySelectorAll: () => [] }, box = { innerHTML: "", append: () => {} };
+    const original = document.getElementById;
+    document.getElementById = (id) => panel[id] || (id === "navProjects" ? nav : id === "projects" ? box : original(id));
+    const timers = [], intervals = [], uploads = {};
+    setTimeout = (fn) => { timers.push(fn); return 0; };
+    setInterval = (fn) => { intervals.push(fn); return 0; };
+    const turn = async () => { timers.splice(0).forEach((fn) => fn()); intervals.forEach((fn) => fn()); await settle(); };
+    const click = (job) => { location.hash = "#/import/" + job; route(); };
+    uploadFile = (url, file, onProgress) => new Promise((resolve) => { uploads[url.split("name=")[1]] = { sent: onProgress, end: resolve }; });
+    const jobs = { a: { state: "running", log: ["reading the disc"], result: null },
+                   b: { state: "running", log: ["unpacking the cartridge"], result: null } };
+    const list = [{ title: "b.nds", importing: "starting", job: "b" }, { title: "a.bin", importing: "starting", job: "a" }];
+    api = async (url, options) => (url.startsWith("/api/projects") ? list
+      : url.startsWith("/api/job") ? JSON.parse(JSON.stringify(jobs[url.split("id=")[1]])) : was.api(url, options));
+    const seen = () => ({ busy: !panel.dropBusy.hidden, error: !panel.dropError.hidden, title: panel.busyTitle.textContent,
+                          step: panel.busyStep.textContent, log: panel.jobLog.textContent, upload: !panel.impUp.hidden,
+                          bar: panel.impUp.firstElementChild.style.width, work: !panel.impWork.hidden });
+    try {
+      S.projects = list;
+      runImport("confirmed=1", new Blob(["a"]), "Analysing Game A…", "a.bin");
+      await showHome();  // the home page again, for the second game
+      runImport("confirmed=1", new Blob(["b"]), "Analysing Game B…", "b.nds");
+      uploads["b.nds"].sent(0.25);
+      uploads["a.bin"].sent(0.5);  // the first upload continues
+      const twoUploads = seen();
+      uploads["a.bin"].end({ job: "a" });  // the job of the first import starts, during the upload of the second
+      await turn();
+      const firstRuns = seen();
+      uploads["b.nds"].end({ job: "b" });
+      await turn();
+      const bothRun = seen();
+      jobs.a.log.push("splitting the game");
+      jobs.b.log.push("finding the functions");
+      await turn();
+      const stays = seen();
+      click("a");
+      const rowA = seen();  // before the server answers again
+      click("b");
+      const rowB = seen();
+      click("a");
+      jobs.b.state = "error";
+      jobs.b.error = "The cartridge is not complete.";
+      await turn();
+      const failed = { ...seen(), name: panel.errName.textContent, address: location.hash };
+      click("a");
+      const again = seen();
+      return { twoUploads, firstRuns, bothRun, stays, rowA, rowB, failed, again };
+    } finally {
+      S.projects = was.projects; api = was.api; uploadFile = was.uploadFile; setTimeout = was.setTimeout;
+      setInterval = was.setInterval; location.hash = was.hash; document.getElementById = original;
+      shownImport = null; imports.clear();
+    }
+  })()`, ctx);
   // a 2017 game's program dropped before the page's state arrived (review of #138): pickFile waits for the state,
   // whose PC table names the pack (it was offered 6.0-7.1's), and the import's dialog lists that 32-bit program's
   // own compilers, never the 64-bit one (setupCompilers, compilerFits)

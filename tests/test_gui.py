@@ -159,6 +159,31 @@ def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
     assert progress["opened"] == "#/p/other-game"
 
 
+def test_two_imports_at_the_same_time_do_not_write_into_the_progress_of_each_other(gui):
+    """With two imports, the drop zone changed between the two: the upload of each game wrote its name and its bar
+    into the drop zone, the import whose upload ended first took the drop zone, and the row of an import showed an old
+    step and an empty log until the server answered again (seconds, while two imports run). The drop zone shows one
+    import, and only that import writes into it. The row of an import shows the step and the log that the page has
+    of that import immediately. An import that fails shows why, and the row of the other import shows that import
+    again."""
+    apart = gui["checks"]["importsApart"]
+    for shown in (apart["twoUploads"], apart["firstRuns"]):
+        assert shown["busy"] and shown["upload"] and not shown["work"] and shown["bar"] == "25.0%"
+        assert shown["title"] == "Copying Game B… into decompdecomp… 25%" and shown["log"] == ""
+    both = apart["bothRun"]
+    assert both["title"] == "Analysing Game B…" and both["step"] == "unpacking the cartridge"
+    assert both["work"] and not both["upload"]
+    assert apart["stays"]["step"] == "finding the functions"
+    assert apart["rowA"]["title"] == "Analysing a.bin…" and apart["rowA"]["step"] == "splitting the game"
+    assert apart["rowA"]["log"] == "reading the disc\nsplitting the game" and apart["rowA"]["work"]
+    assert apart["rowB"]["title"] == "Analysing b.nds…" and apart["rowB"]["step"] == "finding the functions"
+    assert apart["rowB"]["log"] == "unpacking the cartridge\nfinding the functions"
+    failed = apart["failed"]
+    assert failed["error"] and not failed["busy"] and failed["name"] == "b.nds" and failed["address"] == "#/"
+    again = apart["again"]
+    assert again["busy"] and not again["error"] and again["step"] == "splitting the game"
+
+
 def test_a_ds_rom_is_told_by_its_header_as_the_server_tells_it(gui):
     nds = gui["checks"]["nds"]
     assert nds["good"] == ["nds", "ADQE", "DEMOQUESTDS"]
