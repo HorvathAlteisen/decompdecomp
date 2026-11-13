@@ -477,10 +477,22 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       await runImport("confirmed=1&path=%2Fgames%2Fmy-game.z64", undefined, "Analysing your game…");
       // the X of the row of an import: for a job that runs, and for an upload of this page; not while the job is
       // cancelled, and not for the upload of a different page
-      uploads.set("sent.z64", {});
-      const xs = [{ title: "a <b>", job: "j1" }, { title: "sent.z64" }, { title: "a", job: "j1", cancelling: true }, { title: "other.z64" }].map(cancelImportHtml);
+      // (the last row: a different upload of a file with the same name. An upload has its own name, upload)
+      uploads.set("u1", {});
+      const xs = [{ title: "a <b>", job: "j1" }, { title: "sent.z64", upload: "u1" }, { title: "a", job: "j1", cancelling: true },
+                  { title: "sent.z64", upload: "u2" }].map(cancelImportHtml);
+      // the X of an upload stops the request of this page and tells the server, which starts no job for it
+      let stopped = 0;
+      uploads.set("u1", { abort: () => { stopped += 1; } });
+      const sent = [];
+      const listApi = api;
+      api = async (url, options) => { sent.push([url, options && options.body]); return {}; };
+      cancelUpload("u2");  // not an upload of this page: nothing
+      cancelUpload("u1");
+      api = listApi;
+      const cancelled = { stopped, sent, marked: uploads.get("u1").cancelled };
       uploads.clear();
-      return { started, running, registered, same, done, calls: calls.slice(0, 3), xs };
+      return { started, running, registered, same, done, calls: calls.slice(0, 3), xs, cancelled };
     } finally {
       S.projects = was.projects; api = was.api; document.getElementById = original;
     }
@@ -550,12 +562,17 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
       runImport("demo=1", undefined, "Opening Demo Quest 64…");  // a new import starts while the drop zone shows an import
       await turn();
       const fresh = seen(), freshAddress = location.hash;
+      S.projects = [];  // the page opens at the address of an import: the list of projects is not there yet
+      click("k");
+      await turn();
+      const reopened = seen();
       click("gone");  // the address of an import that ended
+      await settle();
       const gone = { address: location.hash, selected: [...selected] };
       jobs.k.state = "done";
       jobs.k.result = { slug: "other-game" };
       await turn();
-      return { started, left, back, askedAgain, other, still, fresh, freshAddress, gone, opened: location.hash, row: nav.innerHTML };
+      return { started, left, back, askedAgain, other, still, fresh, freshAddress, reopened, gone, opened: location.hash, row: nav.innerHTML };
     } finally {
       S.projects = was.projects; api = was.api; setTimeout = was.setTimeout; setInterval = was.setInterval;
       Date.now = was.now; location.hash = was.hash;
@@ -577,7 +594,7 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
     setInterval = (fn) => { intervals.push(fn); return 0; };
     const turn = async () => { timers.splice(0).forEach((fn) => fn()); intervals.forEach((fn) => fn()); await settle(); };
     const click = (job) => { location.hash = "#/import/" + job; route(); };
-    uploadFile = (url, file, onProgress) => new Promise((resolve) => { uploads[url.split("name=")[1]] = { sent: onProgress, end: resolve }; });
+    uploadFile = (url, file, onProgress) => new Promise((resolve) => { uploads[url.split("name=")[1].split("&")[0]] = { sent: onProgress, end: resolve }; });
     const jobs = { a: { state: "running", log: ["reading the disc"], result: null },
                    b: { state: "running", log: ["unpacking the cartridge"], result: null } };
     const list = [{ title: "b.nds", importing: "starting", job: "b" }, { title: "a.bin", importing: "starting", job: "a" }];

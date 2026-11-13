@@ -9,14 +9,19 @@ let picked = null;
    and its end there directly: with two imports, the drop zone changed between the two. */
 let shownImport = null;
 const imports = new Map();
-/* The imports whose game this page sends to the app at this time, by the name of the file (the title of their row
-   until their job starts). The X of such a row stops the upload (cancelUpload): no job is there to cancel. */
+/* The imports whose game this page sends to the app at this time, by the name this page gives to each upload (the
+   server puts it in the row of the import, `upload`). Not by the name of the file: two uploads can have the same
+   one, and the X of one row stopped the other. The X of such a row stops the upload (cancelUpload): no job is there
+   to cancel. The server is told too: a request that stops after its last byte arrived starts its job all the same
+   (api_cancel_import in routes/state.py). */
 const uploads = new Map();
-function cancelUpload(title) {
-  const imp = uploads.get(title);
+let uploadCount = 0;
+function cancelUpload(id) {
+  const imp = uploads.get(id);
   if (!imp) return;
   imp.cancelled = true;
   imp.abort();
+  api("/api/import/cancel", { method: "POST", body: { upload: id } }).catch(() => {});
 }
 
 /* Once, after this version's first start: the old `decomp mcp` entries it took out of the agents' settings
@@ -590,10 +595,15 @@ async function followImport(imp) {
 
 /* The home page with the progress of an import that runs. The row and the card of the import open it
    (#/import/<job>). Before, the home page hid the progress each time it opened, and nothing showed it again. */
-function showImport(job) {
-  showHome();
-  const game = S.projects.find((p) => p.job === job);
-  if (!game) { location.hash = "#/"; return; }  // the import ended, or the list is not there: no row to mark
+async function showImport(job) {
+  const home = showHome();
+  let game = S.projects.find((p) => p.job === job);
+  if (!game) {  // the list is not there yet (the page opens at this address) or is old: the list that showHome gets says
+    await home;
+    if (location.hash !== `#/import/${job}`) return;
+    game = S.projects.find((p) => p.job === job);
+  }
+  if (!game) { location.hash = "#/"; return; }  // the import ended: no row to mark
   const imp = imports.get(job) || { job, title: game.title, log: [], step: game.importing, t0: null, up: null };
   imp.heading = `Analysing ${game.title}…`;
   takeDrop(imp);
@@ -613,11 +623,12 @@ async function runImport(query, file, title, name = "") {
     let started;
     if (upload) {
       const sent = name || file.name || "game.bin";
-      uploads.set(sent, imp);
+      const id = `${Date.now().toString(36)}-${++uploadCount}`;
+      uploads.set(id, imp);
       try {
-        started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(sent)}`, file,
+        started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(sent)}&upload=${id}`, file,
           (p) => { if (!listed) { listed = true; loadNav(); } imp.up = p; paintImport(imp); }, imp);
-      } finally { uploads.delete(sent); }
+      } finally { uploads.delete(id); }
     } else {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }

@@ -122,6 +122,16 @@ class Jobs:
         log.check_cancel = check_cancel
         log.cancelled = cancel.is_set  # for a job that undoes its work when the user cancelled it (an import)
 
+        def commit() -> None:
+            """For a job that undoes its work when the user cancelled it: the last moment of a cancel. Raises when
+            the user cancelled the job. From then, `cancel` says no. Before, a cancel between the last check of the
+            job and its end gave a job that said "cancelled" with its work kept."""
+            with self._lock:
+                check_cancel()
+                job["committed"] = True
+
+        log.commit = commit
+
         def run():
             try:
                 result = fn(log)
@@ -151,7 +161,7 @@ class Jobs:
     def cancel(self, jid: str) -> bool:
         with self._lock:
             job = self.jobs.get(jid)
-            if not job or job["state"] != "running":
+            if not job or job["state"] != "running" or job.get("committed"):
                 return False
             self.cancel_events[jid].set()
             return True

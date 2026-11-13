@@ -59,8 +59,8 @@ function colourOf(slug) {
    (the game is copied into decompdecomp) the row is not a link: its step says so, and the pointer shows that the row
    opens nothing (app.css, `div.nav-proj`). */
 function cancelImportHtml(p) {
-  if (p.cancelling || !(p.job || uploads.has(p.title))) return "";
-  return `<button class="np-x" type="button" data-cancel="${esc(p.job || "")}" data-title="${esc(p.title)}" title="Cancel this import" aria-label="Cancel the import of ${esc(p.title)}">×</button>`;
+  if (p.cancelling || !(p.job || uploads.has(p.upload))) return "";
+  return `<button class="np-x" type="button" data-cancel="${esc(p.job || "")}" data-upload="${esc(p.upload || "")}" data-title="${esc(p.title)}" title="Cancel this import" aria-label="Cancel the import of ${esc(p.title)}">×</button>`;
 }
 /* The X of the row of an import: the import stops, and what it made goes (the server: `listed` in routes/state.py).
    An import whose job did not start is the upload of this page (`uploads`, home.js): the upload stops. A job stops
@@ -73,7 +73,7 @@ $("navProjects").addEventListener("click", async (e) => {
   if (!confirm(`Cancel the import of ${x.dataset.title}?\n\nWhat the import made is deleted. Your copy of the game stays.`)) return;
   try {
     if (x.dataset.cancel) await api("/api/job/cancel", { method: "POST", body: { id: x.dataset.cancel } });
-    else cancelUpload(x.dataset.title);
+    else cancelUpload(x.dataset.upload);
   } catch (err) { toast(esc(err.message), "err"); }
   loadNav();
 });

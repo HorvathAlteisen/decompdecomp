@@ -134,7 +134,12 @@ def test_the_row_of_an_import_has_an_x_that_cancels_it(gui):
     job, upload, cancelling, other = importing["xs"]
     assert 'class="np-x"' in job and 'data-cancel="j1"' in job and 'data-title="a &lt;b&gt;"' in job
     assert 'class="np-x"' in upload and 'data-cancel=""' in upload and 'data-title="sent.z64"' in upload
+    assert 'data-upload="u1"' in upload  # not the name of the file: two uploads can have the same one
     assert cancelling == "" and other == ""
+    # the X of an upload: the request of this page stops, and the server is told (a request that stops after its
+    # last byte arrived starts its job all the same)
+    assert importing["cancelled"] == {"stopped": 1, "marked": True,
+                                      "sent": [["/api/import/cancel", {"upload": "u1"}]]}
     assert 'data-cancel="j1"' in importing["running"]["nav"] and "np-x" not in importing["started"]["nav"]
 
 
@@ -182,6 +187,10 @@ def test_the_row_of_an_import_shows_its_step_and_opens_its_progress_again(gui):
     fresh = progress["fresh"]
     assert fresh["busy"] and fresh["title"] == "Opening Demo Quest 64…" and fresh["step"] == "finding the code segments"
     assert fresh["selected"] == [] and progress["freshAddress"] == "#/"
+    # the page opens at the address of an import (a reload): before, the list of projects was not there yet, and the
+    # page went to the home page without the import
+    reopened = progress["reopened"]
+    assert reopened["busy"] and reopened["title"] == "Analysing other-game.iso…" and reopened["selected"] == ["k"]
     assert progress["gone"] == {"address": "#/", "selected": []}
     assert progress["opened"] == "#/p/other-game"
 

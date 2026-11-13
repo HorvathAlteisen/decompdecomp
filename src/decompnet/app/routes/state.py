@@ -98,7 +98,8 @@ def register(app: App) -> None:
             # no job: the upload of the game runs (only an upload has its name before its job, start_import). Before,
             # the step was "starting" for the whole upload of a disc, with a row that did not open
             first = "starting" if "job" in entry else COPYING
-            shown = {"importing": said[-1] if said else first} | ({"job": entry["job"]} if "job" in entry else {})
+            shown = {"importing": said[-1] if said else first} | \
+                ({"job": entry["job"]} if "job" in entry else {"upload": entry["upload"]} if entry.get("upload") else {})
             if jobs.cancelling(entry.get("job")):
                 shown |= {"importing": CANCELLING, "cancelling": True}
             if entry.get("slug"):
@@ -231,6 +232,9 @@ def register(app: App) -> None:
                 name = game.name
             else:
                 name = entry["title"] = Path(q.get("name") or "game.bin").name
+                # the name the page gave to this upload: its row has it, and the X of the row cancels with it
+                # (api_cancel_import). The name of the file is not enough: two uploads can have the same one
+                entry["upload"] = q.get("upload") or ""
                 upload_dir = home / "uploads" / uuid.uuid4().hex[:8]  # keeps the file's own name
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
@@ -266,9 +270,6 @@ def register(app: App) -> None:
                     shutil.rmtree(game.parent, ignore_errors=True)
             if all_compilers:
                 net.install_compilers(slug, accept, retest=toolchain is None, log=log)
-            settings.data["last_project"] = slug
-            settings.save()
-            autopilot(slug)
             return {"slug": slug}
 
         def listed(log):
@@ -279,7 +280,12 @@ def register(app: App) -> None:
             log.project = lambda slug: entry.update(slug=slug)
             try:
                 done = work(log)
-                log.check_cancel()  # cancelled during the last step: the job says "cancelled", so the project goes
+                log.commit()  # cancelled during the last step: the job says "cancelled", so the project goes
+                # only now, when no cancel can remove the project: before, a cancel during this removed the
+                # project under the autopilot that had started for it
+                settings.data["last_project"] = done["slug"]
+                settings.save()
+                autopilot(done["slug"])
                 return done
             except BaseException:
                 if log.cancelled() and entry.get("slug"):
@@ -288,6 +294,10 @@ def register(app: App) -> None:
             finally:
                 importing.remove(entry)
         entry["title"] = name
+        if entry.get("cancelled"):  # the X of its row, after the last byte of the upload: no job starts
+            if uploaded:
+                shutil.rmtree(game.parent, ignore_errors=True)
+            return fail(ValueError("The import was cancelled."))
         entry["job"] = jobs.start("import", listed, cancelled="The import was cancelled.")
         return JSONResponse({"job": entry["job"]})
 
@@ -302,6 +312,22 @@ def register(app: App) -> None:
         finally:
             if "job" not in entry:
                 importing.remove(entry)
+
+    @mcp.custom_route("/api/import/cancel", methods=["POST"])
+    async def api_cancel_import(request: Request) -> Response:
+        """The X of the row of an upload (`upload`: the name the page gave to it). The page stops its request too, but
+        that is not enough: a request that stops after its last byte arrived starts the job all the same, and the
+        page never gets that job. So the upload is marked and starts no job, or the job it started is cancelled.
+        Nothing here waits, so no job starts between the two."""
+        if (bad := guard(request, write=True)):
+            return bad
+        upload = str((await body(request)).get("upload") or "")
+        for entry in [e for e in importing if upload and e.get("upload") == upload]:
+            if "job" in entry:
+                return JSONResponse({"cancelled": jobs.cancel(entry["job"])})
+            entry["cancelled"] = True
+            return JSONResponse({"cancelled": True})
+        return JSONResponse({"cancelled": False})
 
     COLUMN_KEYS = ("vram", "cc", "ccx")
     GZIP_FROM_BYTES = 4096  # smaller answers aren't worth compressing

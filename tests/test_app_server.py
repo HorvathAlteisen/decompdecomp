@@ -350,6 +350,84 @@ def test_a_cancelled_import_leaves_no_project_and_no_folder(app, slow_imports, t
     assert (tmp_path / "dropped-game.bin").is_file()
 
 
+def test_an_import_starts_the_autopilot_only_when_it_can_no_longer_be_cancelled(app, slow_imports, monkeypatch):
+    """The autopilot started before the last check for a cancel: a cancel during that removed the project under the
+    autopilot that ran for it. And a cancel between that check and the end of the job gave a job that said
+    "cancelled" with its project kept. The import says when it can no longer be cancelled (`log.commit`): the
+    autopilot starts after that, and a cancel after that is refused."""
+    client, net, _ = app
+    start, console = slow_imports
+    started, go_on, late = [], threading.Event(), []
+
+    def autopilot(slug):
+        started.append(slug)
+        late.append(client.post("/api/job/cancel", json={"id": jobs[-1]}, headers={"X-Decomp": "1"}).json())
+        assert go_on.wait(10)
+    monkeypatch.setattr(net, "start_autopilot", autopilot)
+    client.post("/api/settings", json={"autopilot": True}, headers={"X-Decomp": "1"})  # (a test before set it off)
+    jobs = [start("dropped-game")]
+    console.made["dropped-game"].set()
+    _until(lambda: _shown(client)[0].get("importing") == "measuring the project")
+    _cancel(client, jobs[0])
+    console.measured["dropped-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": jobs[0]}).json()["state"] != "running")
+    assert started == []  # cancelled: no autopilot for a project that goes
+
+    jobs.append(start("finished-game"))
+    console.made["finished-game"].set()
+    console.measured["finished-game"].set()
+    _until(lambda: late)
+    go_on.set()
+    _until(lambda: client.get("/api/job", params={"id": jobs[1]}).json()["state"] != "running")
+    assert started == ["finished-game-g"] and late == [{"cancelled": False}]
+    assert client.get("/api/job", params={"id": jobs[1]}).json()["state"] == "done"
+    assert (net.workspace / "finished-game-g").is_dir()
+
+
+def test_the_x_of_an_upload_cancels_the_import_that_the_upload_started(app, slow_imports, tmp_path):
+    """The page stops the request of an upload that the user cancels. A request that stops after its last byte
+    arrived starts the job all the same, and the page never gets that job: the import went on, and the page said
+    "cancelled". The page gives a name to each upload, and the server cancels by that name: the job that the upload
+    started, or the upload before its job starts. The row of an upload has that name, not only the name of its file."""
+    import asyncio
+
+    client, net, _ = app
+    _, console = slow_imports
+    headers = WINDOW | {"X-Decomp": "1"}
+    console.made["sent-game"], console.measured["sent-game"] = threading.Event(), threading.Event()
+    seen = []
+
+    async def upload():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{PORT}", headers=headers) as http:
+            async def body(cancel):
+                yield b"sent-game"
+                seen.append((await http.get("/api/projects")).json()[0])
+                if cancel:
+                    seen.append((await http.post("/api/import/cancel", json={"upload": "u2"})).json())
+
+            params = {"confirmed": "1", "name": "sent-game.bin"}
+            started = await http.post("/api/import", params=params | {"upload": "u1"}, content=body(False))
+            refused = await http.post("/api/import", params=params | {"upload": "u2"}, content=body(True))
+            unknown = await http.post("/api/import/cancel", json={"upload": "u3"})
+            return started, refused, unknown
+
+    before = _shown(client)
+    started, refused, unknown = asyncio.run(upload())
+    assert seen[0] == {"title": "sent-game.bin", "importing": "copying the game into decompdecomp", "upload": "u1"}
+    # cancelled during its upload: no job starts, and its copy is not kept
+    assert seen[2] == {"cancelled": True} and refused.status_code == 400 and "cancelled" in refused.json()["error"]
+    assert unknown.json() == {"cancelled": False}
+    job = started.json()["job"]
+    # its job runs: the name of the upload cancels the job
+    assert client.post("/api/import/cancel", json={"upload": "u1"}, headers={"X-Decomp": "1"}).json() == {"cancelled": True}
+    console.made["sent-game"].set()
+    console.measured["sent-game"].set()
+    _until(lambda: client.get("/api/job", params={"id": job}).json()["state"] != "running")
+    assert client.get("/api/job", params={"id": job}).json()["state"] == "cancelled"
+    assert _shown(client) == before and not list(net.workspace.rglob("sent-game.bin"))
+
+
 def test_an_import_cancelled_before_its_project_is_made_leaves_nothing(app, slow_imports):
     client, net, _ = app
     start, console = slow_imports
@@ -1043,6 +1121,42 @@ def test_a_cancelled_job_stops_at_its_next_checkpoint(tmp_path):
             break
         time.sleep(0.01)
     assert jobs.jobs[jid]["state"] == "cancelled"
+
+
+def test_a_job_that_committed_can_no_longer_be_cancelled():
+    """A job that undoes its work on a cancel (an import) says when the last moment for a cancel is over. A cancel
+    before that makes `commit` raise, so the job undoes its work. A cancel after that is refused: before, it gave a
+    job that said "cancelled" with its work kept."""
+    from decompnet.app.support import Jobs
+
+    jobs = Jobs()
+    entered, committed, finish = threading.Event(), threading.Event(), threading.Event()
+
+    def work(log):
+        entered.set()
+        assert finish.wait(2)
+        log.commit()
+        committed.set()
+        assert finish.wait(2)
+        return "kept"
+
+    early = jobs.start("import", work)
+    assert entered.wait(1) and jobs.cancel(early)
+    finish.set()
+    for _ in range(100):
+        if jobs.jobs[early]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[early]["state"] == "cancelled" and not committed.is_set()
+
+    entered.clear()
+    late = jobs.start("import", work)
+    assert committed.wait(1) and not jobs.cancel(late)
+    for _ in range(100):
+        if jobs.jobs[late]["state"] != "running":
+            break
+        time.sleep(0.01)
+    assert jobs.jobs[late]["state"] == "done" and jobs.jobs[late]["result"] == "kept"
 
 
 def test_cancellation_accepted_before_a_job_returns_cannot_report_success():
