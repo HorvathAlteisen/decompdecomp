@@ -158,7 +158,9 @@ def run(args) -> int:
     from .engine import RomNetwork
     from .server import build
     from .support import file_log
+    from .workers import take_short_turns
 
+    take_short_turns()  # before any thread starts: the window's requests don't wait behind threads that compute
     use_own_wine_prefix()
     home = home_dir()
     internal = home / ".decomp"

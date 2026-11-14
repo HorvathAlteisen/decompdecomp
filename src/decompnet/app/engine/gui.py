@@ -153,7 +153,7 @@ class GuiMixin:
         """Every function of the project for the map and the list; not one gone from the build (network.IN_BUILD: a
         piece joined to its function, kept for its attempts and notes), which the totals leave out too."""
         proj = self._project(slug)
-        rows = self.store.all(
+        rows = self.store.table(  # (every function: in one step, Store.table)
             "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, f.meta, "
             "f.last_checked, f.last_improved, "
             "f.readable, "
@@ -187,10 +187,16 @@ class GuiMixin:
             return []
         cfg = self.cfg(proj)
         out = []
+        # a compiler's name is asked once, not once per function: asking goes through every console's compilers and
+        # the toolchains (5 ms). A PS2 game with 8,600 functions took 47-67 s for each request, and each match and
+        # each opening of the project page made one
+        names: dict[str, str] = {}
         for addr, looks in cmap.of.items():
             own = compiler_for(cfg, addr)
             tc, small = compilermap.kind(looks)
-            out.append([addr, f"{consoles.compiler_name(tc)} {small}".strip(),
+            if tc not in names:
+                names[tc] = consoles.compiler_name(tc)
+            out.append([addr, f"{names[tc]} {small}".strip(),
                         compilermap.kind(looks) != compilermap.kind((own["toolchain"], tuple(own["flags"])))
                         or addr in cmap.contradicted])
         return out
@@ -301,8 +307,8 @@ class GuiMixin:
         board += [{"agent": a, "compiles": 0, "matched": n, "last": None} for a, n in matched.items()]
         board.sort(key=lambda r: (-r["matched"], -r["compiles"]))
         per_hour = [0] * 24
-        for r in self.store.all("SELECT matched_at FROM functions WHERE project_id=? AND status='matched' AND matched_at > ?",
-                                pid, now - 86400):
+        for r in self.store.table("SELECT matched_at FROM functions WHERE project_id=? AND status='matched' AND "
+                                  "matched_at > ?", pid, now - 86400):
             per_hour[23 - min(23, max(0, int((now - r["matched_at"]) // 3600)))] += 1  # (one matched since `now`: this hour)
         compiles = self.store.one("SELECT COUNT(*) AS n FROM attempts t JOIN functions f ON f.id=t.function_id "
                                   "WHERE f.project_id=? AND t.created_at > ?", pid, now - 3600)["n"]
