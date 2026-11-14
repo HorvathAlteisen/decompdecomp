@@ -56,7 +56,13 @@ def _lower_priority() -> None:
 def take_short_turns() -> None:
     """The app's threads take the interpreter in short turns (INTERPRETER_TURN_SECONDS), for the whole process: the
     window's requests and the agents' tool calls don't wait behind the threads that compute. Called as the app
-    starts (cli.run)."""
+    starts (cli.run).
+
+    Not on Windows, which keeps Python's own turns: Python 3.12 waits for the lock there in whole milliseconds
+    (condvar.h: `us/1000`), so a turn under 1 ms is a wait of none, and the threads that wait ask for the lock again
+    and again without a pause. No turn was measured on Windows yet."""
+    if os.name == "nt":
+        return
     sys.setswitchinterval(INTERPRETER_TURN_SECONDS)
 
 

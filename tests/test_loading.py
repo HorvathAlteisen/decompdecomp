@@ -3,10 +3,13 @@ don't take the writer's lock. Measured on a copy of the owner's database (GTA Sa
 more games); these tests need no compiler and no game."""
 
 import json
+import os
 import sqlite3
 import sys
 import threading
 import time
+
+import pytest
 
 from decompnet.app import workers
 from decompnet.app.engine import RomNetwork, gui
@@ -241,6 +244,25 @@ def test_the_rom_maps_colours_ask_for_a_compilers_name_once(tmp_path, monkeypatc
     assert asked == [GCC["toolchain"]]  # (40 times before)
 
 
+def test_windows_keeps_pythons_own_turns(monkeypatch):
+    """Python 3.12 on Windows waits for the interpreter's lock in whole milliseconds: the app's 0.5 ms turn would be
+    a wait of none there, and the threads that wait would ask for the lock without a pause. Windows keeps Python's
+    turns; the other systems get the app's."""
+    pythons_own = sys.getswitchinterval()
+    try:
+        monkeypatch.setattr(workers.os, "name", "nt")
+        workers.take_short_turns()
+        on_windows = sys.getswitchinterval()
+        monkeypatch.setattr(workers.os, "name", "posix")
+        workers.take_short_turns()
+        elsewhere = sys.getswitchinterval()
+    finally:
+        monkeypatch.undo()
+        sys.setswitchinterval(pythons_own)
+    assert on_windows == pythons_own and elsewhere < 0.001 <= on_windows
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows keeps Python's own turns (workers.take_short_turns)")
 def test_a_request_beside_a_computing_thread_gets_the_interpreter_back_in_short_turns():
     """A DS project's live poll looks at 300 files and makes 37 database statements. Each gives the interpreter's lock
     away, and with Python's own 5 ms turns it waited that long to get it back while another thread computed: 4.1 s
