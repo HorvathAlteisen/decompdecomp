@@ -1,0 +1,4 @@
+# a network's own root CA stays on your computer
+*
+!.gitignore
+!README.md
